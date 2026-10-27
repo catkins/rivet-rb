@@ -1,0 +1,105 @@
+# Local development only: the dev token and S3 credentials are not production secrets.
+# Start: docker compose up --build -d
+# Test: docker compose --profile test run --rm test
+# Reset disposable state: docker compose down -v
+# Rivet 2.3.30 supports filesystem (RocksDB) or PostgreSQL, NOT S3 storage.
+# Silo is a separate S3-compatible service, not the engine's backing database.
+name: rivet-rb
+
+x-ruby: &ruby
+  image: rivet-rb:local
+  build:
+    context: .
+  environment: &rivet-environment
+    RIVET_ENDPOINT: http://engine:6420
+    RIVET_TOKEN: dev
+    RIVET_NAMESPACE: default
+    RIVET_POOL_NAME: default
+    RIVETKIT_ENGINE_SPAWN: never
+    # Actor-owned blobs use the Ruby S3 SDK; engine state still uses RocksDB.
+    AWS_ACCESS_KEY_ID: rivetdev
+    AWS_SECRET_ACCESS_KEY: rivetdev-local-password
+    AWS_REGION: us-east-1
+    S3_ENDPOINT: http://s3:9000
+    S3_BUCKET: rivet-local
+
+services:
+  engine:
+    image: rivetdev/engine:2.3.30
+    command: [start, --config, /etc/rivet/config.json]
+    volumes:
+      - ./docker/engine.json:/etc/rivet/config.json:ro
+      - engine-data:/data
+    ports:
+      - "127.0.0.1:6420:6420"
+    healthcheck:
+      test: [CMD, curl, -fsS, http://127.0.0.1:6420/health]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
+
+  engine-init:
+    image: rivetdev/engine:2.3.30
+    entrypoint: [/bin/sh, /init-engine.sh]
+    environment:
+      <<: *rivet-environment
+    volumes:
+      - ./docker/init-engine.sh:/init-engine.sh:ro
+    depends_on:
+      engine:
+        condition: service_healthy
+
+  s3:
+    image: pgsty/silo:RELEASE.2026-10-26T00-00-00Z
+    command: [server, /data, --address, ":9000", --console-address, ":9001"]
+    environment:
+      MINIO_ROOT_USER: rivetdev
+      MINIO_ROOT_PASSWORD: rivetdev-local-password
+    volumes:
+      - s3-data:/data
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    healthcheck:
+      test: [CMD, curl, -fsS, http://127.0.0.1:9000/minio/health/ready]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  s3-init:
+    # This release includes mc; no unpinned MinIO client image is needed.
+    image: pgsty/silo:RELEASE.2026-10-26T00-00-00Z
+    entrypoint: [/bin/sh, /init-s3.sh]
+    environment:
+      AWS_ACCESS_KEY_ID: rivetdev
+      AWS_SECRET_ACCESS_KEY: rivetdev-local-password
+      S3_ENDPOINT: http://s3:9000
+      S3_BUCKET: rivet-local
+    volumes:
+      - ./docker/init-s3.sh:/init-s3.sh:ro
+    depends_on:
+      s3:
+        condition: service_healthy
+
+  runner:
+    <<: *ruby
+    command: [bundle, exec, ruby, examples/server.rb]
+    stop_grace_period: 10s
+    depends_on:
+      engine-init:
+        condition: service_completed_successfully
+      s3-init:
+        condition: service_completed_successfully
+
+  test:
+    <<: *ruby
+    profiles: [test]
+    command: [bundle, exec, rake, test]
+    depends_on:
+      runner:
+        condition: service_started
+
+volumes:
+  engine-data:
+  s3-data:

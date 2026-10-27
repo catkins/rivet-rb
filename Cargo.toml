@@ -1,0 +1,9 @@
+[workspace]
+members = ["ext/rivet"]
+resolver = "2"
+
+[profile.dev]
+debug = 0
+
+[profile.release]
+debug = 0

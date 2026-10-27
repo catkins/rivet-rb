@@ -1,0 +1,17 @@
+.git
+.amp
+.bundle
+.env
+.env.*
+vendor
+target
+tmp
+pkg
+coverage
+lib/rivet/*.so
+lib/rivet/*.bundle
+ext/rivet/Makefile
+ext/rivet/mkmf.log
+ext/rivet/*.so
+ext/rivet/*.bundle
+test/interop/node_modules

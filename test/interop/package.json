@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node index.mjs"
+  },
+  "dependencies": {
+    "rivetkit": "2.3.30"
+  }
+}

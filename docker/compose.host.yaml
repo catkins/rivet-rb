@@ -1,0 +1,29 @@
+# Orb-only fallback when Docker bridge forwarding/NAT is unavailable:
+# docker build --network host --allow network.host -t rivet-rb:local .
+# docker compose -f compose.yaml -f docker/compose.host.yaml up --no-build -d
+# docker compose -f compose.yaml -f docker/compose.host.yaml --profile test run --rm test
+# Host networking binds the engine/S3 directly to the host; use only on a trusted dev host.
+services:
+  engine:
+    network_mode: host
+    ports: !reset []
+    extra_hosts: ["engine=127.0.0.1"]
+  engine-init:
+    network_mode: host
+    extra_hosts: ["engine=127.0.0.1"]
+  s3:
+    network_mode: host
+    ports: !reset []
+  s3-init:
+    network_mode: host
+    extra_hosts: ["s3=127.0.0.1"]
+  runner:
+    build:
+      network: host
+    network_mode: host
+    extra_hosts: ["engine=127.0.0.1", "s3=127.0.0.1"]
+  test:
+    build:
+      network: host
+    network_mode: host
+    extra_hosts: ["engine=127.0.0.1", "s3=127.0.0.1"]

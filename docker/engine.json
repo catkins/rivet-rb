@@ -1,0 +1,20 @@
+{
+  "auth": { "admin_token": "dev" },
+  "guard": { "host": "0.0.0.0" },
+  "api_peer": { "host": "0.0.0.0" },
+  "file_system": { "path": "/data/db" },
+  "telemetry": { "enabled": false },
+  "outbound": { "allow_private_networks": true },
+  "topology": {
+    "datacenter_label": 1,
+    "datacenters": {
+      "default": {
+        "datacenter_label": 1,
+        "is_leader": true,
+        "public_url": "http://engine:6420",
+        "peer_url": "http://engine:6421",
+        "valid_hosts": ["engine", "127.0.0.1", "localhost"]
+      }
+    }
+  }
+}

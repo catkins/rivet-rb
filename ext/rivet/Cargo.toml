@@ -1,0 +1,21 @@
+[package]
+name = "rivet_native"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+magnus = "0.8"
+rb-sys = { version = "0.9", features = ["stable-api-compiled-fallback"] }
+rivetkit = "=2.3.30"
+rivetkit-core = { version = "=2.3.30", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+tokio-util = "0.7"
+async-trait = "0.1"
+anyhow = "1"
+serde_json = "1"
+ciborium = "0.2"
+reqwest = { version = "0.12", default-features = false }

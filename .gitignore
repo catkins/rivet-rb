@@ -1,0 +1,12 @@
+/.bundle/
+/vendor/
+/target/
+/tmp/
+/.amp/
+/lib/rivet/*.so
+/lib/rivet/*.bundle
+/pkg/
+/ext/rivet/Makefile
+/ext/rivet/mkmf.log
+/ext/rivet/*.so
+/test/interop/node_modules/
