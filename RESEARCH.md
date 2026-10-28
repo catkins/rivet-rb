@@ -18,6 +18,33 @@ action, context, registry, startup and persistence code. Packaged **2.3.30** sou
 The published crate's repository metadata names `rivet-ee`, but its packaged SDK source is inspectable
 and matched the public monorepo. Use published packages; no Git checkout or Rivet fork is required to build.
 
+### Rivet 3.0 preview engine
+
+The runnable stack now targets **3.0.0-preview.2**, while retaining the **2.3.30 SDKs** above.
+The [preview announcement](https://rivet.dev/changelog/2026-10-26-introducing-rivet-3-0-preview/)
+explicitly retains the 2.x SDK/protocol; a matching SDK version number is not required.
+The [published release](https://github.com/rivet-dev/rivet/releases/tag/v3.0.0-preview.2)
+points to source `62f8eec8ccc74a7b08f4d11036635039584aea7d`. Docker Hub serves
+`rivetdev/engine:3.0.0-preview.2` at manifest digest
+`sha256:5698157c4f44f98290bf25ac6c3b7465abe38ce34b7058057c14da56ab8590ce`.
+
+Configuration follows that release's source, not the old 2.x self-host example:
+
+- [`engine/packages/config/src/config`](https://github.com/rivet-dev/rivet/tree/v3.0.0-preview.2/engine/packages/config/src/config):
+  `storage.log_directory`, `storage.auto_provision_partitions`, and `object_storage.primary.s3`
+  replace the old root `file_system` configuration. Wildcard peer binds require `api_peer.advertise_address`.
+- [`engine/packages/guard/src/lib.rs`](https://github.com/rivet-dev/rivet/blob/v3.0.0-preview.2/engine/packages/guard/src/lib.rs)
+  mounts `api-public-shim`, whose pool setup is `PUT /pools/{pool}?namespace=default` with `{}`.
+  The old `api-public` source still contains `/runner-pools`, but that router is not mounted by this engine.
+- The binary starts with `--config`, without the old `start` subcommand. `/health` reports
+  `architecture: v3` and `version: 3.0.0`; the image digest identifies the exact preview release.
+- Silo supplies a dedicated `rivet-engine-preview` bucket for engine object storage and a separate
+  `rivet-local` bucket for Ruby AWS SDK examples. `AWS_ALLOW_HTTP=true` permits local Silo HTTP.
+  This single-node setup retains local log/cache and Silo volumes; it does not demonstrate HA or disk-loss recovery.
+
+No 2.x data migration is attempted: the preview uses a new engine volume. The announced migration
+tool and preview support for multi-region, serverless, and ACLs are not yet available.
+
 ## How TypeScript works
 
 The relevant code is under `rivetkit-typescript/packages`:
@@ -99,10 +126,19 @@ handles, not unrelated `BEGIN`/`COMMIT` queries through a pooled connection.
    Do not blindly retry potentially non-idempotent action requests.
 5. **A WebSocket action can otherwise wait indefinitely while reconnecting to a missing actor.**
    The Ruby call API supplies a client deadline. Cancellation still does not undo external side effects.
-6. **Engine S3 storage is not an option in this release.** The exact image rejects `s3` configuration.
-   `engine/packages/config/src/config/db/mod.rs` supports PostgreSQL and FileSystem; filesystem maps to
-   RocksDB in `engine/packages/pools/src/db/udb.rs`. Silo is therefore tested through actor-owned blobs,
-   not mislabeled as engine state storage.
+6. **Engine storage differs between releases.** The original 2.3.30 image rejected S3 configuration
+   and used RocksDB. The 3.0 preview setup above uses Silo for engine object storage as well as
+   actor-owned blobs, in distinct buckets. The blob test alone is not evidence of engine S3 storage.
+7. **Preview runner restart is eventual recovery.** With 2.3.30 SDKs and preview.2, the unchanged Ruby
+   suite passed (16 runs, 65 assertions, no skips), as did the TypeScript interoperability test.
+   An active actor initially timed out across restart. Docker's 10-second grace period killed the
+   runner (exit 137); 45 seconds allowed exit 0 after the SDK's 30-second drain deadline. Even then,
+   the preview waited for the old runner's lost threshold and could expire gateway requests.
+   `test/runner_restart.sh` retries read-only recovery probes and verified the same actor ID, changed
+   activation, retained state/SQLite/KV, and a new subscription after 45.09 seconds of recovery.
+   The sleep counter remained zero on this restart: do not infer that `on_sleep` ran or that unsaved
+   state is safe. This is single-node Linux host-network verification, not HA, disk-loss recovery,
+   uninterrupted connections, or a 2.x migration test.
 
 ## Alternatives and remaining work
 

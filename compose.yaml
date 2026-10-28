@@ -2,8 +2,7 @@
 # Start: docker compose up --build -d
 # Test: docker compose --profile test run --rm test
 # Reset disposable state: docker compose down -v
-# Rivet 2.3.30 supports filesystem (RocksDB) or PostgreSQL, NOT S3 storage.
-# Silo is a separate S3-compatible service, not the engine's backing database.
+# WarpDrive uses Silo for engine object storage, separate from actor-owned blobs.
 name: rivet-rb
 
 x-ruby: &ruby
@@ -16,7 +15,7 @@ x-ruby: &ruby
     RIVET_NAMESPACE: default
     RIVET_POOL_NAME: default
     RIVETKIT_ENGINE_SPAWN: never
-    # Actor-owned blobs use the Ruby S3 SDK; engine state still uses RocksDB.
+    # Actor-owned blobs use the Ruby S3 SDK and a separate bucket from the engine.
     AWS_ACCESS_KEY_ID: rivetdev
     AWS_SECRET_ACCESS_KEY: rivetdev-local-password
     AWS_REGION: us-east-1
@@ -25,11 +24,16 @@ x-ruby: &ruby
 
 services:
   engine:
-    image: rivetdev/engine:2.3.30
-    command: [start, --config, /etc/rivet/config.json]
+    image: rivetdev/engine:3.0.0-preview.2@sha256:5698157c4f44f98290bf25ac6c3b7465abe38ce34b7058057c14da56ab8590ce
+    command: [--config, /etc/rivet/config.json]
+    environment:
+      AWS_ALLOW_HTTP: "true"
     volumes:
       - ./docker/engine.json:/etc/rivet/config.json:ro
-      - engine-data:/data
+      - engine-preview-data:/data
+    depends_on:
+      s3-init:
+        condition: service_completed_successfully
     ports:
       - "127.0.0.1:6420:6420"
     healthcheck:
@@ -40,7 +44,7 @@ services:
       start_period: 10s
 
   engine-init:
-    image: rivetdev/engine:2.3.30
+    image: rivetdev/engine:3.0.0-preview.2@sha256:5698157c4f44f98290bf25ac6c3b7465abe38ce34b7058057c14da56ab8590ce
     entrypoint: [/bin/sh, /init-engine.sh]
     environment:
       <<: *rivet-environment
@@ -76,6 +80,7 @@ services:
       AWS_SECRET_ACCESS_KEY: rivetdev-local-password
       S3_ENDPOINT: http://s3:9000
       S3_BUCKET: rivet-local
+      ENGINE_S3_BUCKET: rivet-engine-preview
     volumes:
       - ./docker/init-s3.sh:/init-s3.sh:ro
     depends_on:
@@ -85,7 +90,8 @@ services:
   runner:
     <<: *ruby
     command: [bundle, exec, ruby, examples/server.rb]
-    stop_grace_period: 10s
+    # Preview advertises a 30-second SDK drain deadline; do not SIGKILL it at 10s.
+    stop_grace_period: 45s
     depends_on:
       engine-init:
         condition: service_completed_successfully
@@ -101,5 +107,5 @@ services:
         condition: service_started
 
 volumes:
-  engine-data:
+  engine-preview-data:
   s3-data:

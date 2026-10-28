@@ -2,7 +2,9 @@
 
 Experimental Ruby actors and clients backed by the **real RivetKit Rust runtime**.
 Not a Ruby imitation of the engine, and no Node.js process is needed to host Ruby actors.
-Pins `rivetkit`, `rivetkit-core`, the engine and the interoperability tests to **2.3.30**.
+Targets the WarpDrive-based **Rivet 3.0.0-preview.2** engine, pinned by image digest.
+`rivetkit`, `rivetkit-core` and the TypeScript interoperability client stay pinned to **2.3.30**:
+[Rivet 3.0 retains the 2.x SDK and protocol](https://rivet.dev/changelog/2026-10-26-introducing-rivet-3-0-preview/).
 See [RESEARCH.md](RESEARCH.md) for the design, upstream sources and tradeoffs.
 
 ## Run the whole stack
@@ -16,7 +18,8 @@ docker compose --profile test run --rm test
 
 This starts:
 
-- Rivet engine with a persistent `engine-data` volume and the `default` runner pool.
+- Rivet preview engine with a persistent `engine-preview-data` volume for WarpDrive's local log/cache,
+  S3 object storage in `rivet-engine-preview`, and the `default` runner pool.
 - A Ruby runner hosting the counter and kitchen-sink examples.
 - [PGSTY Silo](https://github.com/pgsty/silo), pinned to `RELEASE.2026-10-26T00-00-00Z`, with a persistent volume and `rivet-local` bucket.
 - A disposable test container that exercises the public Ruby API against those services.
@@ -25,10 +28,17 @@ Ports 6420 (Rivet), 9000 (S3), and 9001 (Silo console) bind to your machine's lo
 The dev Rivet token is `dev`; Silo's local credentials are `rivetdev` / `rivetdev-local-password`.
 **These settings are for local experiments, not production.**
 
-**S3 is for actor-owned blobs, not Rivet's internal state.** Engine 2.3.30 has no S3 storage backend.
-The example uses `aws-sdk-s3` to put/get Silo objects. The test independently reads the uploaded
-bytes through S3, sleeps the actor, and reads the same object through the reactivated actor.
-Rivet's state, queues, schedules and SQLite data live in the engine volume.
+**Engine storage and actor-owned blobs are separate.** WarpDrive manages Rivet state and SQLite
+using its local log/cache and the `rivet-engine-preview` S3 bucket. The example independently uses
+`aws-sdk-s3` to put/get objects in `rivet-local`; it does not access the engine bucket. The blob test
+reads uploaded bytes directly through S3, sleeps the actor, and reads them through the reactivated actor.
+Both buckets live in Silo's `s3-data` volume. Keep both volumes when restarting this single-node setup;
+it is not a three-node replicated deployment or a test of disk-loss recovery.
+
+This is a **fresh preview deployment, not a 2.x data migration**. The new engine volume deliberately
+does not reuse the old `engine-data` RocksDB volume. Existing 2.x data is left untouched but is not
+available to the preview. Upstream has announced, but not yet shipped, a migration tool. Preview
+does not yet support multi-region, serverless, or ACLs; stay on 2.x if you need those features.
 
 ```sh
 docker compose logs -f runner
@@ -64,7 +74,8 @@ precompiled platform gems are published.
 To use an existing engine, set `RIVET_ENDPOINT`, `RIVET_TOKEN`, `RIVET_NAMESPACE`,
 `RIVET_POOL_NAME` and `RIVETKIT_ENGINE_SPAWN=never`, then run `bundle exec ruby examples/server.rb`.
 The pool must already exist, as configured by `docker/init-engine.sh` in the Compose setup.
-For Rivet's automatic local-engine download, use `RIVETKIT_ENGINE_AUTO_DOWNLOAD=1` instead.
+Do not use `RIVETKIT_ENGINE_AUTO_DOWNLOAD=1` to test this preview: the pinned 2.x SDK's automatic
+engine selection is separate from the explicit preview image and storage configuration here.
 Signal handling belongs to Ruby; the example handles INT/TERM and calls `registry.stop`.
 
 ## Server example: define and host an actor
@@ -201,6 +212,22 @@ concurrent updates, SQL types/commit/rollback, KV deletion, WebSocket events, co
 unsubscribe, queues, schedules, binary HTTP, and persisted state/SQL/KV/S3 after sleep/wake.
 For a host runner, export `RIVET_ENDPOINT` and run `bundle exec ruby -Itest test/integration_test.rb`.
 S3 tests additionally require `S3_ENDPOINT`, `S3_BUCKET`, and AWS credentials (Compose supplies them).
+
+With the Compose stack running, test an active actor across a runner restart:
+
+```sh
+bash test/runner_restart.sh
+# With the orb host-network override:
+bash test/runner_restart.sh -f compose.yaml -f docker/compose.host.yaml
+```
+
+This restarts the runner, checks the same actor ID with a new activation, and verifies persisted
+state, SQLite, KV, and a new WebSocket subscription. It interrupts existing runner connections.
+The preview can take over 40 seconds to release an active actor from the old runner; requests
+during recovery can hit client or gateway deadlines. The test retries only read-only `info` probes
+with a bounded recovery window, not mutations. Compose allows 45 seconds for runner shutdown
+because the SDK's advertised drain deadline is 30 seconds; the old 10-second grace period killed it.
+This is eventual recovery, not uninterrupted service or a guarantee about unsaved state on SIGKILL.
 
 The optional interoperability test uses the actual TypeScript 2.3.30 client against Ruby actors:
 

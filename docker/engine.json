@@ -1,8 +1,22 @@
 {
   "auth": { "admin_token": "dev" },
   "guard": { "host": "0.0.0.0" },
-  "api_peer": { "host": "0.0.0.0" },
-  "file_system": { "path": "/data/db" },
+  "api_peer": { "host": "0.0.0.0", "advertise_address": "engine:6421" },
+  "storage": {
+    "log_directory": "/data",
+    "auto_provision_partitions": 1
+  },
+  "object_storage": {
+    "primary": {
+      "s3": {
+        "bucket": "rivet-engine-preview",
+        "region": "us-east-1",
+        "endpoint": "http://s3:9000",
+        "access_key_id": "rivetdev",
+        "secret_access_key": "rivetdev-local-password"
+      }
+    }
+  },
   "telemetry": { "enabled": false },
   "outbound": { "allow_private_networks": true },
   "topology": {

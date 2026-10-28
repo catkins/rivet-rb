@@ -7,7 +7,7 @@ services:
   engine:
     network_mode: host
     ports: !reset []
-    extra_hosts: ["engine=127.0.0.1"]
+    extra_hosts: ["engine=127.0.0.1", "s3=127.0.0.1"]
   engine-init:
     network_mode: host
     extra_hosts: ["engine=127.0.0.1"]
