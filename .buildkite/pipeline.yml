@@ -1,0 +1,18 @@
+agents:
+  queue: hosted-linux
+
+cache: ".buildkite/cache-volume"
+
+env:
+  MISE_GITHUB_ATTESTATIONS: "false"
+  MISE_RUBY_GITHUB_ATTESTATIONS: "false"
+
+steps:
+  - label: ":ruby: Ruby 4 / Rivet / Silo"
+    command: mise run ci
+    timeout_in_minutes: 45
+    artifact_paths:
+      - "tmp/ci-logs/**/*"
+    plugins:
+      - mise#v1.1.4:
+          version: 2026.6.6

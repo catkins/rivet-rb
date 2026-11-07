@@ -1,0 +1,23 @@
+[settings]
+github_attestations = false
+
+[settings.ruby]
+compile = false
+github_attestations = false
+
+[tools]
+ruby = "4.0.9"
+rust = "1.99.1"
+node = "26.12.1"
+
+[env]
+BUNDLE_JOBS = "2"
+BUNDLE_RETRY = "3"
+BUNDLE_FROZEN = "true"
+CARGO_BUILD_JOBS = "1"
+CARGO_TERM_COLOR = "always"
+RB_SYS_CARGO_PROFILE = "dev"
+
+[tasks.ci]
+description = "Build, lint, document and test against real Rivet and Silo services"
+run = "bash .buildkite/ci.sh"

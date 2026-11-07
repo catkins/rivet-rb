@@ -332,6 +332,20 @@ enable missing engine extensions or make SQLite decimal arithmetic exact.
 
 ## Tests and interoperability
 
+Buildkite runs [the CI pipeline](https://buildkite.com/catkins-test/rivet-rb) on the hosted Linux
+queue, following the same mise setup as `slatedb-rb`. `.mise.toml` pins Ruby, Rust and Node;
+`.buildkite/hooks/post-checkout` installs native build libraries before mise installs Ruby.
+
+On a Linux machine with Docker, the same checks run with `mise run ci`. This compiles the extension,
+runs rustfmt and Clippy, renders YARD and requires 100% documentation coverage, then runs the full
+Ruby suite against real Rivet/Silo services and the TypeScript interoperability client. Skipped tests
+fail CI. The durable-agent tests use a local model fixture, not a paid provider.
+
+CI uses a separate Compose project with disposable volumes and the Linux host-network override.
+It needs ports 6420, 9000 and 9001 free; stop your development stack first without deleting its
+volumes. CI captures runner/service logs under `tmp/ci-logs` and removes only its own containers
+and volumes on exit. Buildkite uploads those logs as artifacts, including on test failure.
+
 The integration suite covers Unicode/nested JSON, explicit action allowlists, identity/input,
 concurrent updates, SQL types/commit/rollback, KV deletion, WebSocket events, connection state,
 unsubscribe, queues, schedules, binary HTTP, and persisted state/SQL/KV/S3 after sleep/wake.

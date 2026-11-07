@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "--- Install native build dependencies before mise setup"
+packages=(
+  build-essential
+  ca-certificates
+  curl
+  git
+  libclang-dev
+  libffi-dev
+  libgmp-dev
+  libreadline-dev
+  libssl-dev
+  libyaml-dev
+  pkg-config
+  zlib1g-dev
+)
+if [[ "$(id -u)" -eq 0 ]]; then
+  apt-get update
+  apt-get install -y --no-install-recommends "${packages[@]}"
+else
+  sudo apt-get update
+  sudo apt-get install -y --no-install-recommends "${packages[@]}"
+fi
