@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+
+echo "Checking native build prerequisites"
+packages=(
+  ruby
+  ruby-dev
+  build-essential
+  libclang-dev
+  libssl-dev
+  pkg-config
+  curl
+  ca-certificates
+  git
+)
+missing=()
+for package in "${packages[@]}"; do
+  if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed'; then
+    missing+=("$package")
+  fi
+done
+if ((${#missing[@]})); then
+  sudo apt-get update
+  sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}"
+fi
+
+echo "Preparing stable Rust"
+export PATH="$HOME/.cargo/bin:$PATH"
+if ! command -v rustup >/dev/null; then
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+    sh -s -- -y --profile minimal --default-toolchain stable
+fi
+if ! rustup run stable rustc --version >/dev/null 2>&1; then
+  rustup toolchain install stable --profile minimal
+fi
+rustup override set stable
+
+echo "Installing locked Ruby dependencies"
+bundler_version="$(awk '/^BUNDLED WITH$/{getline; print $1}' Gemfile.lock)"
+if ! gem list --installed bundler --version "$bundler_version" >/dev/null; then
+  sudo gem install bundler --version "$bundler_version" --no-document
+fi
+bundle config set --local path vendor/bundle
+time BUNDLE_FROZEN=true bundle check || time BUNDLE_FROZEN=true bundle install
+
+echo "Fetching locked Rust dependencies"
+time cargo fetch --locked
+
+echo "Building the debug extension (several minutes on a cold orb)"
+time RB_SYS_CARGO_PROFILE=dev CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" bundle exec rake compile
+
+echo "Installing TypeScript interoperability test dependencies"
+time npm ci --prefix test/interop --no-audit --no-fund
+
+echo "Orb setup complete; use Compose to start Rivet and Silo when needed"

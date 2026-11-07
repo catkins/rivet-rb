@@ -78,6 +78,13 @@ Do not use `RIVETKIT_ENGINE_AUTO_DOWNLOAD=1` to test this preview: automatic eng
 is separate from the explicit preview image and storage configuration here.
 Signal handling belongs to Ruby; the example handles INT/TERM and calls `registry.stop`.
 
+### Amp orbs
+
+`.agents/setup` installs native build prerequisites, prepares stable Rust, installs the locked
+Ruby and TypeScript test dependencies, and builds the debug extension with two Cargo jobs by default.
+It reuses installed packages and build caches when rerun. Node.js and npm are provided by the orb.
+Rivet and Silo are not started automatically; use the Compose setup above for integration tests.
+
 ## Server example: define and host an actor
 
 The server defines a persistent counter, exposes two actions, and broadcasts changes to connected
