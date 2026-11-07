@@ -58,7 +58,7 @@ impl Bridge {
         conn: Option<ConnCtx<RubyActor>>,
     ) -> Result<Value> {
         let (tx, rx) = oneshot::channel();
-        let sender = if is_work(kind) {
+        let sender = if is_work(kind) || kind == "run" {
             &self.tx
         } else {
             &self.lifecycle_tx
@@ -110,8 +110,8 @@ impl Bridge {
 
     async fn run(self: Arc<Self>, mut start: ActorStart) -> Result<()> {
         let ctx = Ctx::new(start.ctx.clone());
-        let initial = async {
-            match start.snapshot.as_deref() {
+        let initial: Result<Value> = async {
+            let state = match start.snapshot.as_deref() {
                 Some(bytes) => decode(bytes),
                 None => {
                     let input = match start.input.as_deref() {
@@ -120,7 +120,9 @@ impl Bridge {
                     };
                     self.call(ctx.clone(), "create_state", input, None).await
                 }
-            }
+            }?;
+            start.ctx.set_state_initial(encode(&state)?);
+            Ok(state)
         }
         .await;
         match initial {
@@ -186,6 +188,16 @@ impl Actor for RubyActor {
         Ok(Self {
             bridge: BRIDGE.get(),
         })
+    }
+
+    async fn run(self: Arc<Self>, ctx: Ctx<Self>) -> Result<()> {
+        if self.bridge.definition["run"].as_bool() != Some(true) {
+            return Ok(());
+        }
+        self.bridge
+            .call(ctx, "run", Value::Null, None)
+            .await
+            .map(|_| ())
     }
 
     async fn on_create(self: Arc<Self>, ctx: Ctx<Self>) -> Result<()> {
@@ -318,8 +330,14 @@ pub struct Callback {
 }
 
 impl Callback {
-    fn work(&self) -> bool {
-        is_work(&self.kind)
+    fn lane(&self) -> &'static str {
+        if self.kind == "run" {
+            "background"
+        } else if is_work(&self.kind) {
+            "work"
+        } else {
+            "lifecycle"
+        }
     }
     fn cancel(&self) {
         self.reply.lock().unwrap().take();
@@ -535,6 +553,10 @@ impl NativeContext {
     fn aborted(&self) -> bool {
         self.0.aborted()
     }
+    fn keep_awake(&self) -> Result<magnus::Value, Error> {
+        let _region = self.0.keep_awake_region();
+        Ruby::get().expect("Ruby thread with GVL").yield_values(())
+    }
     fn connections(&self) -> magnus::RArray {
         let ruby = Ruby::get().expect("Ruby thread with GVL");
         ruby.ary_from_iter(self.0.conns_vec().into_iter().map(NativeConnection))
@@ -636,7 +658,7 @@ pub fn init(ruby: &Ruby, module: magnus::RModule) -> Result<(), Error> {
     callback.define_method("context", method!(Callback::context, 0))?;
     callback.define_method("connection", method!(Callback::connection, 0))?;
     callback.define_method("active?", method!(Callback::active, 0))?;
-    callback.define_method("work?", method!(Callback::work, 0))?;
+    callback.define_method("lane", method!(Callback::lane, 0))?;
     callback.define_method("cancel", method!(Callback::cancel, 0))?;
     callback.define_method("reject", method!(Callback::reject, 1))?;
     callback.define_method("reply", method!(Callback::reply, 2))?;
@@ -649,6 +671,7 @@ pub fn init(ruby: &Ruby, module: magnus::RModule) -> Result<(), Error> {
     context.define_method("sleep", method!(NativeContext::sleep, 0))?;
     context.define_method("destroy", method!(NativeContext::destroy, 0))?;
     context.define_method("aborted?", method!(NativeContext::aborted, 0))?;
+    context.define_method("keep_awake", method!(NativeContext::keep_awake, 0))?;
     context.define_method("connections", method!(NativeContext::connections, 0))?;
     context.define_method("sql", method!(NativeContext::sql, 2))?;
     context.define_method("begin_sql", method!(NativeContext::begin_sql, 1))?;

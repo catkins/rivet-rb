@@ -10,3 +10,5 @@
 /ext/rivet/mkmf.log
 /ext/rivet/*.so
 /test/interop/node_modules/
+/.yardoc/
+/doc/

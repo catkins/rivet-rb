@@ -1,6 +1,9 @@
 require "bundler/gem_tasks"
 require "rb_sys/extensiontask"
 require "rake/testtask"
+require "yard"
+
+YARD::Rake::YardocTask.new
 
 RbSys::ExtensionTask.new("rivet_native", Gem::Specification.load("rivet.gemspec")) do |ext|
   ext.ext_dir = "ext/rivet"

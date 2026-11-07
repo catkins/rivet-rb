@@ -1,0 +1,5 @@
+--no-private
+--hide-api private
+--markup markdown
+lib/rivet.rb
+lib/**/*.rb
