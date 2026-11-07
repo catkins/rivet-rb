@@ -128,7 +128,11 @@ Only explicitly declared actions are remotely callable. Blocks run with the acto
 `input` is `nil` when absent. Constant defaults also work: `state({"count" => 0})`.
 
 State, input, action arguments/results and event arguments use JSON-compatible values. Hash keys
-come back as strings. `ctx.state` is a **deeply frozen snapshot**: use `ctx.update_state { |state| ... }`
+come back as strings. Ruby serialization rejects integers outside the native bridge's exact range
+(−2⁶³ to 2⁶⁴−1) with `RangeError`, including nested values and custom `to_json` output. Pass larger
+values as decimal strings. TypeScript `number` has a narrower exact-integer range (±(2⁵³−1)); the
+binding cannot recover precision already lost by another client. SQL binds use signed 64 bits only.
+`ctx.state` is a **deeply frozen snapshot**: use `ctx.update_state { |state| ... }`
 or `ctx.state = value` to persist changes. `update_state` returns the block result and writes the
 mutated value only if the block succeeds. Keep these blocks short and do not perform I/O in them.
 Rivet schedules saves; returning an action does not mean its state has been fsynced. Graceful sleep
@@ -169,11 +173,21 @@ end # closes the connection and unsubscribes
 Without a block, `poll(timeout:)` returns an argument Array, or `nil` on timeout.
 Call `subscription.unsubscribe` or `connection.close` when finished.
 An array-valued event argument is preserved: `ctx.broadcast(:event, [1, 2])` delivers `[[1, 2]]` to `poll`.
+Listener blocks must cooperate with shutdown: `unsubscribe(timeout: 30)` bounds the listener join,
+and connection close shares its deadline across listeners. A timeout does not kill a running block.
 
 Handles support `get`, `get_or_create`, `create`, `get_for_id`, and `id`.
 Keys are Arrays of strings; options include `params:`, `input:`, `pool:` and `region:` where supported by Rust.
-Actions default to a 30-second client deadline. **Timeout is not proof that an action did not run.**
-The binding does not automatically retry actions.
+`Client.new(timeout: 30)` sets the default total native-operation deadline. Override it on `call`,
+`id`, eager `create`, `send_message`, `send_and_wait`, `fetch`, or connection `close` with `timeout:`
+(positive, finite seconds). Deadlines include discovery, requests and response bodies; `connect`
+starts asynchronously, and subscription polling has its own timeout. `send_and_wait(timeout: 0)` is
+not supported; use `send_message` without waiting for a reply. **Timeout is not proof that an action
+did not run.** The binding does not automatically retry actions.
+
+Convenient action syntax remains available, but Ruby coercion and pattern-matching protocols do
+not trigger remote calls. Use `handle.call(:to_ary)` (or any other explicit name) for actions that
+collide with Ruby methods or reserved coercion names.
 
 Engine 2.3.30 can return `actor/destroyed_during_creation` for concurrent cold `getOrCreate` requests.
 Resolve a shared handle with `counter.id` before fan-out to multiple Ruby threads. This caches its
@@ -204,21 +218,28 @@ Hooks use the class DSL, e.g. `on_start do |ctx| ... end`. `on_start` runs on ev
 
 SQLite `query` returns Arrays of row Hashes. `execute` returns `columns`, `rows`, `changes` and
 `last_insert_row_id`. Bind nil, booleans (0/1), signed 64-bit integers, floats, UTF-8 text and binary
-Strings (`string.b`, SQLite BLOBs). Results preserve binary Strings. Transactions commit on normal
+Strings (`string.b`, SQLite BLOBs). Out-of-range Ruby integer binds raise `RangeError` before native
+conversion. Results preserve binary Strings. Transactions commit on normal
 block completion and roll back on exceptions or nonlocal exits. Use the yielded `tx`, not `ctx.sql`,
 inside a transaction. This API buffers HTTP requests/responses and uses a Rack-shaped response triple;
 it is not a Rack server adapter and does not support streaming bodies.
 
 The internal actor queue and the `queue` handler DSL are separate upstream APIs: `ctx.queue.send`
 enqueues for manual consumption with `next`; client `send_message`/`send_and_wait` dispatch a declared handler.
-Queues, like KV, are deprecated upstream in Rivet 3.0. The Ruby APIs remain available; new code
-should use actions and SQLite for pending work.
+Actor state, connection state, queues and KV are deprecated in the TypeScript 3.0.6 SDK. The Rust
+3.0.6 high-level actor trait no longer has managed state or queue handlers; Ruby retains them through
+core APIs. New code should favor SQLite for durable data, instance variables for activation-local
+data, and actions plus SQLite for pending work. See the [source-based audit](RESEARCH.md#audit-2026-11-07)
+for coverage gaps and priorities.
 
 ## Tests and interoperability
 
 The integration suite covers Unicode/nested JSON, explicit action allowlists, identity/input,
 concurrent updates, SQL types/commit/rollback, KV deletion, WebSocket events, connection state,
 unsubscribe, queues, schedules, binary HTTP, and persisted state/SQL/KV/S3 after sleep/wake.
+`bundle exec rake test` also checks stalled-response deadlines, integer rejection and coercions;
+with `RIVET_ENDPOINT`, it creates an isolated test pool for activation isolation, overload, reserved
+lifecycle capacity and bounded shutdown. Run this suite against the local development stack.
 For a host runner, export `RIVET_ENDPOINT` and run `bundle exec ruby -Itest test/integration_test.rb`.
 S3 tests additionally require `S3_ENDPOINT`, `S3_BUCKET`, and AWS credentials (Compose supplies them).
 
@@ -252,12 +273,22 @@ RIVET_ENDPOINT=http://127.0.0.1:6420 RIVET_TOKEN=dev npm test --prefix test/inte
   actors can progress concurrently. Scheduling order is not promised. Avoid synchronous self-calls
   and cyclic actor-to-actor calls. Lifecycle callbacks are managed separately by Rivet.
 - Callbacks execute on Ruby-created threads, never Tokio workers. Blocking native I/O releases the GVL.
-  CPU-heavy Ruby still shares MRI's GVL. One worker is created per callback; there is no bounded Ruby worker pool yet.
+  CPU-heavy Ruby still shares MRI's GVL. `registry.start(workers: 16, lifecycle_workers: 4,
+  shutdown_timeout: 45)` caps live work and lifecycle threads separately. Each native callback
+  channel holds at most 64 pending callbacks. Excess work fails with Rivet's overload error rather
+  than allocating more threads; waiting for an actor's action lock also consumes a work slot.
+  Lifecycle capacity is reserved but finite, not a guarantee that hooks cannot overload. These are
+  bridge admission limits, not a bound on upstream runtime memory or buffered HTTP bodies.
 - Cancellation cannot forcibly interrupt Ruby code or external side effects. Use `ctx.aborted?` for
   cooperative cancellation; stale callbacks cannot use `update_state` after their native reply closes.
+  `stop` requests shutdown; `start` keeps dispatching cleanup until completion or the shutdown deadline,
+  then cancels replies and aborts the runner task. If it times out it raises `Rivet::TimeoutError`;
+  it does not kill Ruby threads, guarantee final persistence, or permit restart while callbacks live.
+  Deadlines require MRI to schedule the dispatcher; native extensions that retain the GVL can delay it.
 - No workflows, cron management, schedule cancellation/listing, raw streaming WebSockets, hibernation
   callbacks, serverless HTTP hosting, schema generation, or Fiber scheduler integration yet.
-- Errors from native operations are runtime exceptions; action failures become `Rivet::Error`.
+- Native operation failures raise `Rivet::Error`; binding deadlines raise its `Rivet::TimeoutError` subclass.
+  Ruby argument/serialization failures retain their normal exception classes.
   Arbitrary Ruby exceptions are logged locally and go through Rivet's normal error boundary; this is
   not yet a complete structured/public application-error API.
 - Native APIs are pinned. Upgrades need protocol and lifecycle tests, not just a version bump.

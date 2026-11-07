@@ -3,7 +3,7 @@ use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::OnceLock;
 
-use magnus::{Error, Ruby};
+use magnus::{Error, ExceptionClass, RModule, Ruby, prelude::*};
 use tokio::runtime::Runtime;
 
 pub fn runtime() -> &'static Runtime {
@@ -17,9 +17,17 @@ pub fn runtime() -> &'static Runtime {
     })
 }
 
-pub fn error(error: impl std::fmt::Display) -> Error {
+fn exception(name: &str) -> ExceptionClass {
     let ruby = Ruby::get().expect("Ruby thread with GVL");
-    Error::new(ruby.exception_runtime_error(), error.to_string())
+    ruby.class_object()
+        .const_get::<_, RModule>("Rivet")
+        .expect("Rivet module")
+        .const_get(name)
+        .expect("Rivet exception class")
+}
+
+pub fn error(error: impl std::fmt::Display) -> Error {
+    Error::new(exception("Error"), error.to_string())
 }
 
 pub fn without_gvl<F: FnOnce() -> T, T>(f: F) -> T {
@@ -55,6 +63,20 @@ pub fn without_gvl<F: FnOnce() -> T, T>(f: F) -> T {
 
 pub fn wait<T>(future: impl Future<Output = anyhow::Result<T>>) -> Result<T, Error> {
     without_gvl(|| runtime().block_on(future)).map_err(|e| error(format!("{e:#}")))
+}
+
+pub fn deadline<T>(
+    timeout_ms: u64,
+    future: impl Future<Output = anyhow::Result<T>>,
+) -> Result<T, Error> {
+    match without_gvl(|| {
+        runtime().block_on(async {
+            tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), future).await
+        })
+    }) {
+        Ok(result) => result.map_err(|e| error(format!("{e:#}"))),
+        Err(_) => Err(Error::new(exception("TimeoutError"), "operation timed out")),
+    }
 }
 
 pub fn parse(json: &str) -> Result<serde_json::Value, Error> {

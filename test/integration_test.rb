@@ -19,7 +19,8 @@ class IntegrationTest < Minitest::Test
   end
 
   def test_json_positional_arguments_and_explicit_action_allowlist
-    value = {"text" => "日本語 🦀", "nested" => [nil, true, false, 3.25, -7], "empty" => {}}
+    value = {"text" => "日本語 🦀", "nested" => [nil, true, false, 3.25, -7,
+      -9_223_372_036_854_775_808, 9_223_372_036_854_775_807, 18_446_744_073_709_551_615], "empty" => {}}
     assert_equal [value, [1, 2], nil], @actor.echo(value, [1, 2], nil)
     assert_equal [], @actor.echo
     assert_raises(Rivet::Error) { @actor.call(:initialize) }
@@ -134,7 +135,7 @@ class IntegrationTest < Minitest::Test
     result = @actor.send_and_wait(:double, {"value" => 13}, timeout: 3)
     assert_equal "completed", result.fetch("status")
     assert_equal 26, result.fetch("response")
-    error = assert_raises(RuntimeError) { @actor.send_and_wait(:undeclared, {}, timeout: 3) }
+    error = assert_raises(Rivet::Error) { @actor.send_and_wait(:undeclared, {}, timeout: 3) }
     assert_includes error.message, "actor/not_found"
   end
 

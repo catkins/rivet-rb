@@ -159,6 +159,154 @@ runner protocol as well. Neither is necessary for this experiment: the published
 the native bridge works end to end, including calls from the actual TypeScript client.
 
 This is not full TypeScript SDK parity. Workflows, streaming/hibernatable raw WebSockets, serverless
-hosting, cron management, schema generation, a bounded callback worker pool, Fiber integration and
+hosting, cron management, schema generation, Fiber integration and
 a complete structured application-error API remain unimplemented. See README for supported APIs,
 threading constraints, build commands and reproducible tests.
+
+## Audit: 2026-11-07
+
+Baseline: `origin/main` at [the orb setup commit](https://github.com/catkins/rivet-rb/commit/0fb6206353aa930752537ef7f5d463385b95f828), with a clean worktree.
+The review covered all Ruby wrappers and native bridge modules, their callers and tests, then
+separately checked which layers could be removed without losing behavior. It was performed in one
+thread, without delegating. [Audit conversation](https://ampcode.com/threads/T-01a1b49b-3e59-751f-9306-becceb91e0eb).
+
+### Comparison sources
+
+The main comparison is **Rust 3.0.6 versus TypeScript 3.0.6**, not Rust 3.0.6 versus the older
+interoperability fixture. Both SDKs are in upstream tag
+[`v3.0.6`](https://github.com/rivet-dev/rivet/tree/e1ec8e6d36c580028badeddd717b6b74a8794e45).
+The published Rust `rivetkit`, `rivetkit-core` and `rivetkit-client` packages' entire `src/` trees
+were compared with that tag: no differences. npm reports the same commit as `rivetkit@3.0.6`'s
+`gitHead`. The committed TypeScript fixture remains **2.3.30**; it was not upgraded by this audit.
+The local integration engine remains **3.0.0-preview.2**, at the digest in Compose.
+
+Primary source entry points at that tag:
+
+- Rust [`Actor` and runner](https://github.com/rivet-dev/rivet/tree/v3.0.6/rivetkit-rust/packages/rivetkit/src):
+  `actor.rs`, `start.rs`, `context.rs`, `registry.rs`, `serverless_listener.rs`.
+- Rust [client](https://github.com/rivet-dev/rivet/tree/v3.0.6/rivetkit-rust/packages/client/src):
+  `client.rs`, `handle.rs`, `connection.rs`, `remote_manager.rs`.
+- Rust [core actor APIs](https://github.com/rivet-dev/rivet/tree/v3.0.6/rivetkit-rust/packages/rivetkit-core/src/actor):
+  `config.rs`, `context.rs`, `queue.rs`, `schedule.rs`.
+- TypeScript [`actor/config.ts`](https://github.com/rivet-dev/rivet/blob/v3.0.6/rivetkit-typescript/packages/rivetkit/src/actor/config.ts),
+  [`actor/errors.ts`](https://github.com/rivet-dev/rivet/blob/v3.0.6/rivetkit-typescript/packages/rivetkit/src/actor/errors.ts),
+  [`client`](https://github.com/rivet-dev/rivet/tree/v3.0.6/rivetkit-typescript/packages/rivetkit/src/client),
+  [`registry/native.ts`](https://github.com/rivet-dev/rivet/blob/v3.0.6/rivetkit-typescript/packages/rivetkit/src/registry/native.ts)
+  and [`workflow`](https://github.com/rivet-dev/rivet/tree/v3.0.6/rivetkit-typescript/packages/rivetkit/src/workflow).
+
+### Findings and changes
+
+**Verdict: needs attention before production use; the experimental bridge works.**
+
+1. **Fixed — failed startup reused activation-local Ruby state.** `Registry` cached instances by
+   actor ID but removed them only on sleep/destroy. Rust returns directly on startup failure,
+   without those hooks. A real actor whose `on_start` increments `@starts` and raises when it is
+   1 failed its first activation, then incorrectly served an action returning 2 on the next
+   activation. Instances are now owned by the native activation identity, not by actor ID or hook
+   names. A native completion guard marks finished activations even when their future is dropped;
+   the dispatcher prunes them and retains the context while cached to prevent pointer reuse.
+   The retained public registry/client regression never serves a later action from the failed
+   instance. Sleep/wake tests also check a new activation and retained durable state.
+2. **Fixed — SQL could silently bind oversized Ruby integers as REAL.** Rust's JSON parser accepts
+   numbers outside its integer range as floats before the native SQL integer guard sees them.
+   `SQL#execute` now raises `RangeError` before encoding integer binds outside SQLite's signed
+   64-bit range. `query` and transaction handles share this boundary. A retained regression test
+   checks rejection before native I/O; live probes check both valid endpoints and ordinary floats.
+3. **Fixed — general JSON serialization silently rounded oversized integers.** Actions sent
+   −9223372036854775809 or 18446744073709551616 returned floats. One Ruby serializer now checks the
+   actual serialized tree before all Ruby-to-native JSON crossings, including custom `to_json`
+   output. It rejects integers outside −2⁶³ through 2⁶⁴−1 with `RangeError`. Actor-produced invalid
+   results become normal action failures, not rounded successes. Decimal strings remain the
+   cross-language workaround; already-rounded TypeScript numbers cannot be recovered. Enabling
+   serde_json's `arbitrary_precision` was rejected: its private Number serialization changes CBOR
+   encoding, including ordinary integers, and would affect the shared upstream dependency.
+4. **Fixed — callback load and shutdown could grow or wait without bound.** Admission now caps
+   live Ruby callback threads at 16 work / 4 lifecycle by default, with separate 64-entry native
+   channels. Full capacity rejects with upstream's typed overload error; `try_send` never blocks
+   a Tokio worker. There is no extra Ruby queue or worker-pool hierarchy. Work waiting for an
+   actor lock counts toward the cap; lifecycle slots remain available during work saturation.
+   Shutdown keeps dispatching cleanup, uses one 45-second default deadline, then cancels replies
+   and aborts the runner task. A timed-out registry cannot restart while its Ruby callbacks live.
+   These limits do not bound all upstream allocations or forcibly stop user Ruby/native code.
+5. **Fixed — deadlines did not cover ID resolution, eager create, queues or fetch bodies.** A
+   shared native deadline wraps the complete async operation, including discovery and response
+   bytes. `Client.new(timeout: 30)` sets the default; the blocking public operations accept an
+   override. Positive finite seconds are required; zero-timeout `send_and_wait` is no longer
+   accepted (use `send_message`). Connection close bounds native disposal and shares remaining
+   time across listener joins; cleanup attempts every subscription even if one fails. The stalled
+   TCP fixture supplies headers but withholds body bytes, so a headers-only timeout cannot pass.
+   A timeout does not undo side effects; no automatic mutation retries were added.
+6. **Fixed — inconsistent native exceptions and accidental remote coercion calls.** Native
+   failures consistently raise `Rivet::Error`; binding deadlines raise `Rivet::TimeoutError`.
+   Argument and JSON validation retain normal Ruby exception classes. Implicit coercion,
+   pattern-matching and Marshal protocols are excluded from dynamic actions. Tests caught the
+   additional `Integer(handle)` fallback to `to_i`, beyond `to_int`. Explicit `call(:to_ary)`
+   still works against the engine. **Remaining:** application errors still lack a complete
+   machine-readable group/code/metadata contract and a public-error declaration API.
+
+The useful simplification was actor-local ownership of definitions: each native bridge now holds
+only its own shared definition, rather than retaining and indexing the entire registry on every
+action/queue dispatch. Actor config is initialized directly as a Rust struct. The factory/event
+adapter itself remains necessary: deleting it would lose managed state persistence and queue
+handlers removed from the high-level Rust trait. Ruby references to their client also remain
+necessary: upstream `Client::drop` shuts down its connections. The state and action mutexes serve
+different contracts and were not merged.
+
+### Prioritized feature coverage
+
+P1 is the next useful slice, not a request to implement everything. P2 is demand-driven; P3 should
+stay deferred unless an application needs it. Production correctness issues above precede parity.
+
+| Area | Ruby coverage | Rust 3.0.6 / TypeScript 3.0.6 comparison | Priority |
+| --- | --- | --- | --- |
+| Discovery and actions | `get`, `get_or_create`, `create`, ID lookup; positional HTTP/WS actions; total operation deadlines | Core use cases covered. Missing client close/dispose, optional resolution, reload, gateway URLs and custom headers. Rust also exposes encoding/transport/input-size/metadata options; TS adds token renewal, token issuance and retry-budget controls. | P1: client close; P2: remaining options |
+| Identity, input, ephemeral data | Identity and initializer input; ordinary Ruby instance variables | Rust has `ctx.input()` in later hooks; Ruby does not. TS `vars` has a different API, not a missing Ruby storage mechanism. | P2: input accessor |
+| Durable data | Frozen JSON state, SQL typed binds/rows/transactions; KV CRUD | TS retains deprecated state/connection-state APIs and a write-through proxy. Rust high-level state is removed; core still supports snapshots. SQL is the preferred 3.0 durable store. Ruby need not copy the JS proxy or database-provider/ORM layers. | Covered basics; P2: migration ergonomics |
+| Lifecycle | Create/start/sleep/destroy and connection hooks | Ruby `on_start` runs on every activation, like TS `onWake`; it is not a migration hook. TS also has `onMigrate`, `onStateChange`, `onBeforeActionResponse`. Rust has `run`, task registration and keep-awake scopes. | P1: migration hook and scoped background work |
+| Events and connections | Broadcast, targeted emit, subscriptions, unsubscribe, status, block cleanup | Rust/TS also expose once/open/close/error/status listeners; TS has `ready` and connection IDs. Hibernated-connection restoration is not wired into Ruby. | P1: readiness/error visibility; P2: richer listeners |
+| Scheduling | Relative `after`, returning an ID | Both have absolute `at`, cancel/get/list, cron set/every/get/list/delete/history. Ruby also omits scheduled-fire metadata. | P1: cancel/get/list/at; P2: cron |
+| HTTP and WebSockets | Buffered binary fetch and Rack-shaped response triples; SDK action sockets | Both upstreams support raw WebSockets and streaming HTTP. Request headers are not exposed in Ruby action/preconnect context. Rust also has opt-in bounded concurrent HTTP callbacks. These are not supplied merely by using the Rust runner. | P2: request context; P3: streaming/raw sockets |
+| Hosting | Long-lived runner, explicit Ruby signal ownership | Rust core supports serverless runtime construction; the high-level Rust/TS hosting layers supply HTTP adapters. Ruby's core `serve_with_config` call does not supply that adapter. Preview engine support is a separate constraint. | P3 |
+| Queues and KV | Manual queue send/next, client handlers/replies; KV CRUD | Deprecated in 3.0. Rust high-level queue handlers are removed, while core and TS retain them. Batch/completable queue operations and KV list/batch APIs are missing bindings, but low-value parity targets for new code. | P3 |
+| Errors, validation, telemetry | Consistent native error/timeout classes; local exception logging; explicit action allowlist; integer validation | TS has structured public/user errors, runtime schemas and tracing controls. Rust uses typed serde/action/event contracts and tracing. Ruby has neither TS schema generation nor automatic equivalent runtime validation. | P1: structured public errors; P2: validation/tracing |
+| Workflows | None | TS has an experimental workflow driver/context. Rust has lower-level run/alarm and inspector events, not an equivalent high-level workflow DSL. This is partly an upstream SDK difference, not simply omitted Rust methods. | P3 |
+| S3 and Ruby async | AWS SDK example; blocking calls release the GVL | S3 is an application integration, not a Rivet storage binding. Ruby Fiber scheduling and MRI fork safety are Ruby-specific concerns, not TS parity features. | Keep current S3 integration; defer Fiber integration |
+
+### Validation and limits
+
+- Initial `bundle exec rake test`: 16 tests, 9 assertions, no failures, 12 integration skips.
+- Native debug extension rebuilt with `RB_SYS_CARGO_PROFILE=dev CARGO_BUILD_JOBS=2 bundle exec rake compile`.
+- `cargo clippy --locked --lib -- -D warnings` and `git diff --check` passed.
+- Initial audit tests with `RIVET_ENDPOINT` and local Silo credentials: **17 tests, 72 assertions, no failures,
+  errors or skips**. This includes persistence after sleep, SQL rollback, connection isolation,
+  actions/events, queues, schedules and S3 bytes read independently of the actor.
+- Final hardening run, `bundle exec rake test` with the real preview engine and Silo:
+  **22 tests, 130 assertions, 0 failures, 0 errors, 0 skips**. Native rebuild, Clippy with warnings
+  denied, rustfmt check and diff whitespace check also passed. Both TypeScript versions below
+  were rerun against the rebuilt runner.
+- `npm test --prefix test/interop`: real TypeScript **2.3.30** client passed HTTP actions, WS
+  actions/events, JSON and queue replies. The same script also passed with **3.0.6** installed in a
+  disposable directory; the committed dependency pin was left unchanged.
+- The SQL rejection regression failed against the original Ruby implementation and passed after
+  the change. Live checks preserved −2⁶³, 2⁶³−1 and 3.25, and rejected three oversized integer binds
+  constructed inside Ruby from decimal strings, avoiding prior rounding at the action boundary.
+- The retained registry test uses the real engine in an isolated pool. It checks startup instance
+  isolation, actor-generated invalid integers, explicit coercion-named actions, HTTP/WS overload,
+  a connection hook while work is saturated, shutdown with a non-cooperating callback, refused
+  restart while that callback lives, and rejected state mutation after cancellation.
+- Integer action roundtrips preserve −2⁶³, 2⁶³−1 and 2⁶⁴−1. Retained tests reject oversized nested
+  input/arguments/queue bodies before network I/O. Before hardening, `Array(handle)` issued a
+  remote `to_ary` action; now Array, string and numeric conversions remain local.
+- Loading the baseline client wrapper against the native extension reproduced Integer → Float
+  loss through a live echo action; the final wrapper rejects the same input before network I/O.
+  A temporary live probe blocked two event listeners, timed out connection close, released them,
+  and checked that both listener threads stopped. The stall fixture also checks HTTP body timeout.
+
+The integration stack used the documented host-network override, Docker's `vfs` driver, the pinned
+preview engine and Silo release, and a Ruby runner on the orb. This was not a release-profile build,
+a load/soak test, a runner-restart rerun, an HA test, a disk-loss test, a 2.x migration, a serverless
+hosting test or a proof of production readiness. Forced shutdown is tested at the bridge boundary,
+not as proof that every upstream task has terminated or external side effects have stopped.
+Structured application errors, event-buffer backpressure, client-wide disposal and operational
+load/recovery testing remain work before production use. Poll-only event buffers remain unbounded;
+the callback admission cap does not apply to client event subscriptions.

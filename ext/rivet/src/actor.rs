@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
@@ -17,10 +18,35 @@ use crate::runtime::{decode, encode, error, parse, runtime, wait, without_gvl};
 
 tokio::task_local! { static BRIDGE: Arc<Bridge>; }
 
+const CALLBACK_CAPACITY: usize = 64;
+
+fn is_work(kind: &str) -> bool {
+    matches!(kind, "action" | "queue" | "on_fetch")
+}
+
+fn overloaded(capacity: usize, operation: &str) -> anyhow::Error {
+    rivetkit_core::error::ActorLifecycle::Overloaded {
+        channel: "ruby_callbacks".to_owned(),
+        capacity,
+        operation: operation.to_owned(),
+    }
+    .build()
+}
+
 pub struct Bridge {
-    tx: mpsc::Sender<Callback>,
-    definitions: Arc<HashMap<String, Value>>,
+    tx: mpsc::SyncSender<Callback>,
+    lifecycle_tx: mpsc::SyncSender<Callback>,
+    definition: Arc<Value>,
     state: Mutex<Value>,
+    finished: AtomicBool,
+}
+
+struct ActivationGuard(Arc<Bridge>);
+
+impl Drop for ActivationGuard {
+    fn drop(&mut self) {
+        self.0.finished.store(true, Ordering::Release);
+    }
 }
 
 impl Bridge {
@@ -32,8 +58,13 @@ impl Bridge {
         conn: Option<ConnCtx<RubyActor>>,
     ) -> Result<Value> {
         let (tx, rx) = oneshot::channel();
-        self.tx
-            .send(Callback {
+        let sender = if is_work(kind) {
+            &self.tx
+        } else {
+            &self.lifecycle_tx
+        };
+        sender
+            .try_send(Callback {
                 ctx,
                 bridge: self.clone(),
                 kind: kind.to_owned(),
@@ -41,7 +72,10 @@ impl Bridge {
                 conn,
                 reply: Mutex::new(Some(tx)),
             })
-            .map_err(|_| anyhow!("Ruby dispatcher stopped"))?;
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => overloaded(CALLBACK_CAPACITY, kind),
+                mpsc::TrySendError::Disconnected(_) => anyhow!("Ruby dispatcher stopped"),
+            })?;
         rx.await.map_err(|_| anyhow!("Ruby callback dropped"))?
     }
 
@@ -52,7 +86,7 @@ impl Bridge {
         body: Vec<u8>,
         conn: rivetkit::ConnHandle,
     ) -> Result<rivetkit_core::QueueSendResult> {
-        if !self.definitions[ctx.name()]["queues"]
+        if !self.definition["queues"]
             .as_array()
             .is_some_and(|names| names.iter().any(|v| v == &name))
         {
@@ -256,7 +290,7 @@ impl ActionSet<RubyActor> for RubyActor {
         name: &str,
         args: &[u8],
     ) -> Option<Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send>>> {
-        if !actor.bridge.definitions[ctx.name()]["actions"]
+        if !actor.bridge.definition["actions"]
             .as_array()?
             .iter()
             .any(|v| v == name)
@@ -284,6 +318,17 @@ pub struct Callback {
 }
 
 impl Callback {
+    fn work(&self) -> bool {
+        is_work(&self.kind)
+    }
+    fn cancel(&self) {
+        self.reply.lock().unwrap().take();
+    }
+    fn reject(&self, capacity: usize) {
+        if let Some(tx) = self.reply.lock().unwrap().take() {
+            let _ = tx.send(Err(overloaded(capacity, &self.kind)));
+        }
+    }
     fn kind(&self) -> String {
         self.kind.clone()
     }
@@ -300,11 +345,13 @@ impl Callback {
             .map(NativeConnection)
     }
     fn active(&self) -> bool {
-        self.reply
-            .lock()
-            .unwrap()
-            .as_ref()
-            .is_some_and(|tx| !tx.is_closed())
+        !self.bridge.finished.load(Ordering::Acquire)
+            && self
+                .reply
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|tx| !tx.is_closed())
     }
     fn reply(&self, json: String, failure: Option<String>) -> Result<(), Error> {
         let result = match failure {
@@ -321,6 +368,7 @@ impl Callback {
 #[magnus::wrap(class = "Rivet::NativeRunner", free_immediately, size)]
 pub struct NativeRunner {
     rx: Mutex<mpsc::Receiver<Callback>>,
+    lifecycle_rx: Mutex<mpsc::Receiver<Callback>>,
     task: Mutex<Option<tokio::task::JoinHandle<Result<()>>>>,
     cancel: CancellationToken,
 }
@@ -336,22 +384,24 @@ impl NativeRunner {
         let definitions: HashMap<String, Value> =
             serde_json::from_str(&definitions).map_err(error)?;
         let options = parse(&options)?;
-        let (tx, rx) = mpsc::channel();
-        let definitions = Arc::new(definitions);
+        let (tx, rx) = mpsc::sync_channel(CALLBACK_CAPACITY);
+        let (lifecycle_tx, lifecycle_rx) = mpsc::sync_channel(CALLBACK_CAPACITY);
         let mut registry = rivetkit_core::CoreRegistry::new();
         for (name, definition) in definitions.iter() {
-            let mut config = rivetkit::ActorConfig::default();
-            config.has_state = true;
-            config.has_database = true;
-            config.remote_sqlite = true;
-            config.actions = definition["actions"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|name| rivetkit_core::ActionDefinition {
-                    name: name.as_str().unwrap().to_owned(),
-                })
-                .collect();
+            let mut config = rivetkit::ActorConfig {
+                has_state: true,
+                has_database: true,
+                remote_sqlite: true,
+                actions: definition["actions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|name| rivetkit_core::ActionDefinition {
+                        name: name.as_str().unwrap().to_owned(),
+                    })
+                    .collect(),
+                ..Default::default()
+            };
             if let Some(ms) = definition["sleep_timeout_ms"].as_u64() {
                 config.sleep_timeout = Duration::from_millis(ms);
             }
@@ -359,16 +409,22 @@ impl NativeRunner {
                 config.state_save_interval = Duration::from_millis(ms);
             }
             let tx = tx.clone();
-            let definitions = definitions.clone();
+            let lifecycle_tx = lifecycle_tx.clone();
+            let definition = Arc::new(definition.clone());
             registry.register(
                 name,
                 ActorFactory::new_with_manual_startup_ready(config, move |start| {
                     let bridge = Arc::new(Bridge {
                         tx: tx.clone(),
-                        definitions: definitions.clone(),
+                        lifecycle_tx: lifecycle_tx.clone(),
+                        definition: definition.clone(),
                         state: Mutex::new(Value::Null),
+                        finished: AtomicBool::new(false),
                     });
-                    Box::pin(bridge.run(start))
+                    Box::pin(async move {
+                        let _activation = ActivationGuard(bridge.clone());
+                        bridge.run(start).await
+                    })
                 }),
             );
         }
@@ -392,6 +448,7 @@ impl NativeRunner {
             runtime().spawn(async move { registry.serve_with_config(config, shutdown).await });
         Ok(Self {
             rx: Mutex::new(rx),
+            lifecycle_rx: Mutex::new(lifecycle_rx),
             task: Mutex::new(Some(task)),
             cancel,
         })
@@ -399,6 +456,9 @@ impl NativeRunner {
 
     fn poll(&self) -> Option<Callback> {
         without_gvl(|| {
+            if let Ok(callback) = self.lifecycle_rx.lock().unwrap().try_recv() {
+                return Some(callback);
+            }
             self.rx
                 .lock()
                 .unwrap()
@@ -423,6 +483,17 @@ impl NativeRunner {
     fn stop(&self) {
         self.cancel.cancel();
     }
+    fn abort(&self) {
+        self.stop();
+        if let Some(task) = self.task.lock().unwrap().take() {
+            task.abort();
+        }
+        for rx in [&self.rx, &self.lifecycle_rx] {
+            while let Ok(callback) = rx.lock().unwrap().try_recv() {
+                callback.cancel();
+            }
+        }
+    }
 }
 
 #[magnus::wrap(class = "Rivet::NativeContext", free_immediately, size)]
@@ -439,7 +510,10 @@ impl NativeContext {
                 rivetkit::ActorKeySegment::Number(v) => json!(v),
             })
             .collect();
-        json!({"id": self.0.actor_id(), "name": self.0.name(), "key": key, "region": self.0.region()}).to_string()
+        json!({"id": self.0.actor_id(), "name": self.0.name(), "key": key, "region": self.0.region(), "activation": self.0.inner().instance_key().to_string()}).to_string()
+    }
+    fn finished(&self) -> bool {
+        self.1.finished.load(Ordering::Acquire)
     }
     fn state(&self) -> String {
         self.1.state.lock().unwrap().to_string()
@@ -555,15 +629,20 @@ pub fn init(ruby: &Ruby, module: magnus::RModule) -> Result<(), Error> {
     runner.define_method("finished?", method!(NativeRunner::finished, 0))?;
     runner.define_method("finish", method!(NativeRunner::finish, 0))?;
     runner.define_method("stop", method!(NativeRunner::stop, 0))?;
+    runner.define_method("abort", method!(NativeRunner::abort, 0))?;
     let callback = module.define_class("NativeCallback", ruby.class_object())?;
     callback.define_method("kind", method!(Callback::kind, 0))?;
     callback.define_method("data", method!(Callback::data, 0))?;
     callback.define_method("context", method!(Callback::context, 0))?;
     callback.define_method("connection", method!(Callback::connection, 0))?;
     callback.define_method("active?", method!(Callback::active, 0))?;
+    callback.define_method("work?", method!(Callback::work, 0))?;
+    callback.define_method("cancel", method!(Callback::cancel, 0))?;
+    callback.define_method("reject", method!(Callback::reject, 1))?;
     callback.define_method("reply", method!(Callback::reply, 2))?;
     let context = module.define_class("NativeContext", ruby.class_object())?;
     context.define_method("metadata", method!(NativeContext::metadata, 0))?;
+    context.define_method("finished?", method!(NativeContext::finished, 0))?;
     context.define_method("state", method!(NativeContext::state, 0))?;
     context.define_method("state=", method!(NativeContext::set_state, 1))?;
     context.define_method("broadcast", method!(NativeContext::broadcast, 2))?;

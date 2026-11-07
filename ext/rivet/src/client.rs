@@ -7,7 +7,7 @@ use rivetkit::client::{
 };
 use serde_json::{Value, json};
 
-use crate::runtime::{error, parse, runtime, wait, without_gvl};
+use crate::runtime::{deadline, error, parse, runtime, without_gvl};
 
 #[magnus::wrap(class = "Rivet::NativeClient", free_immediately, size)]
 pub struct NativeClient(Client);
@@ -65,16 +65,19 @@ impl NativeClient {
                 .0
                 .get_for_id(&name, &key[0], GetOptions { params })
                 .map_err(error)?,
-            "create" => wait(self.0.create(
-                &name,
-                key,
-                CreateOptions {
-                    params,
-                    input,
-                    region,
-                    pool_name,
-                },
-            ))?,
+            "create" => deadline(
+                options["timeout_ms"].as_u64().unwrap_or(30_000),
+                self.0.create(
+                    &name,
+                    key,
+                    CreateOptions {
+                        params,
+                        input,
+                        region,
+                        pool_name,
+                    },
+                ),
+            )?,
             _ => return Err(error("unknown handle mode")),
         };
         Ok(NativeHandle(handle))
@@ -87,36 +90,32 @@ pub struct NativeHandle(rivetkit::client::handle::ActorHandle);
 impl NativeHandle {
     fn action(&self, name: String, args: String, timeout_ms: u64) -> Result<String, Error> {
         let args: Vec<Value> = serde_json::from_str(&args).map_err(error)?;
-        Ok(wait(async {
-            tokio::time::timeout(
-                Duration::from_millis(timeout_ms),
-                self.0.action(&name, args),
-            )
-            .await?
-        })?
-        .to_string())
+        Ok(deadline(timeout_ms, self.0.action(&name, args))?.to_string())
     }
-    fn resolve(&self) -> Result<String, Error> {
-        wait(self.0.resolve())
+    fn resolve(&self, timeout_ms: u64) -> Result<String, Error> {
+        deadline(timeout_ms, self.0.resolve())
     }
     fn connect(&self) -> NativeClientConnection {
         let _guard = runtime().enter();
         NativeClientConnection(self.0.connect())
     }
     #[allow(deprecated)]
-    fn send(&self, name: String, body: String) -> Result<(), Error> {
-        wait(self.0.send(&name, parse(&body)?, SendOpts::default()))
+    fn send(&self, name: String, body: String, timeout_ms: u64) -> Result<(), Error> {
+        deadline(
+            timeout_ms,
+            self.0.send(&name, parse(&body)?, SendOpts::default()),
+        )
     }
     #[allow(deprecated)]
     fn send_and_wait(&self, name: String, body: String, timeout_ms: u64) -> Result<String, Error> {
         let opts = SendAndWaitOpts {
             timeout: Some(Duration::from_millis(timeout_ms)),
         };
-        let result = wait(self.0.send_and_wait(&name, parse(&body)?, opts))?;
+        let result = deadline(timeout_ms, self.0.send_and_wait(&name, parse(&body)?, opts))?;
         Ok(json!({"status": format!("{:?}", result.status).to_lowercase(), "response": result.response}).to_string())
     }
 
-    fn fetch(&self, path: String, options: String) -> Result<String, Error> {
+    fn fetch(&self, path: String, options: String, timeout_ms: u64) -> Result<String, Error> {
         let options = parse(&options)?;
         let method = options["method"]
             .as_str()
@@ -134,7 +133,7 @@ impl NativeHandle {
         }
         let body: Option<Vec<u8>> =
             serde_json::from_value(options["body"].clone()).map_err(error)?;
-        wait(async {
+        deadline(timeout_ms, async {
             let response = self
                 .0
                 .fetch(&path, method, header_map, body.map(Into::into))
@@ -162,14 +161,7 @@ pub struct NativeClientConnection(rivetkit::client::connection::ActorConnection)
 impl NativeClientConnection {
     fn action(&self, name: String, args: String, timeout_ms: u64) -> Result<String, Error> {
         let args: Vec<Value> = serde_json::from_str(&args).map_err(error)?;
-        Ok(wait(async {
-            tokio::time::timeout(
-                Duration::from_millis(timeout_ms),
-                self.0.action(&name, args),
-            )
-            .await?
-        })?
-        .to_string())
+        Ok(deadline(timeout_ms, self.0.action(&name, args))?.to_string())
     }
     fn subscribe(&self, name: String) -> NativeSubscription {
         let (tx, rx) = mpsc::channel();
@@ -183,8 +175,11 @@ impl NativeClientConnection {
             rx: Mutex::new(rx),
         }
     }
-    fn close(&self) {
-        without_gvl(|| runtime().block_on(self.0.dispose()));
+    fn close(&self, timeout_ms: u64) -> Result<(), Error> {
+        deadline(timeout_ms, async {
+            self.0.dispose().await;
+            Ok(())
+        })
     }
     fn status(&self) -> String {
         format!("{:?}", self.0.conn_status()).to_lowercase()
@@ -218,15 +213,15 @@ pub fn init(ruby: &Ruby, module: magnus::RModule) -> Result<(), Error> {
     client.define_method("handle", method!(NativeClient::handle, 4))?;
     let handle = module.define_class("NativeHandle", ruby.class_object())?;
     handle.define_method("action", method!(NativeHandle::action, 3))?;
-    handle.define_method("resolve", method!(NativeHandle::resolve, 0))?;
+    handle.define_method("resolve", method!(NativeHandle::resolve, 1))?;
     handle.define_method("connect", method!(NativeHandle::connect, 0))?;
-    handle.define_method("send_message", method!(NativeHandle::send, 2))?;
+    handle.define_method("send_message", method!(NativeHandle::send, 3))?;
     handle.define_method("send_and_wait", method!(NativeHandle::send_and_wait, 3))?;
-    handle.define_method("fetch", method!(NativeHandle::fetch, 2))?;
+    handle.define_method("fetch", method!(NativeHandle::fetch, 3))?;
     let conn = module.define_class("NativeClientConnection", ruby.class_object())?;
     conn.define_method("action", method!(NativeClientConnection::action, 3))?;
     conn.define_method("subscribe", method!(NativeClientConnection::subscribe, 1))?;
-    conn.define_method("close", method!(NativeClientConnection::close, 0))?;
+    conn.define_method("close", method!(NativeClientConnection::close, 1))?;
     conn.define_method("status", method!(NativeClientConnection::status, 0))?;
     let sub = module.define_class("NativeSubscription", ruby.class_object())?;
     sub.define_method("poll", method!(NativeSubscription::poll, 1))?;

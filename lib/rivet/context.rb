@@ -25,8 +25,10 @@ module Rivet
     end
 
     def state=(value)
-      check_active!
-      @actor.state_lock.synchronize { @native.state = JSON.generate(value) }
+      @actor.state_lock.synchronize do
+        check_active!
+        @native.state = Rivet.dump(value)
+      end
     end
 
     def update_state
@@ -35,14 +37,14 @@ module Rivet
         value = JSON.parse(@native.state)
         result = yield value
         check_active!
-        @native.state = JSON.generate(value)
+        @native.state = Rivet.dump(value)
         result
       end
     end
 
     def broadcast(name, *args)
       check_active!
-      @native.broadcast(name.to_s, JSON.generate(args))
+      @native.broadcast(name.to_s, Rivet.dump(args))
     end
 
     def connections = @native.connections.map { |conn| ConnectionContext.new(conn) }
@@ -55,7 +57,7 @@ module Rivet
     def after(seconds, action, *args)
       check_active!
       raise ArgumentError, "delay must be nonnegative" if seconds < 0
-      @native.schedule((seconds * 1000).to_i, action.to_s, JSON.generate(args))
+      @native.schedule((seconds * 1000).to_i, action.to_s, Rivet.dump(args))
     end
 
     private
@@ -79,11 +81,11 @@ module Rivet
     def state = JSON.parse(@native.state)
 
     def state=(value)
-      @native.state = JSON.generate(value)
+      @native.state = Rivet.dump(value)
     end
 
     def emit(name, *args)
-      @native.send_event(name.to_s, JSON.generate(args))
+      @native.send_event(name.to_s, Rivet.dump(args))
     end
 
     def disconnect = @native.disconnect
@@ -96,9 +98,12 @@ module Rivet
 
     def execute(statement, *params)
       params = params.map do |value|
+        if value.is_a?(Integer) && !value.between?(-9_223_372_036_854_775_808, 9_223_372_036_854_775_807)
+          raise RangeError, "SQL integers must fit in signed 64 bits"
+        end
         value.is_a?(String) && value.encoding == Encoding::BINARY ? {blob: value.bytes} : value
       end
-      result = JSON.parse(@native.sql(statement, JSON.generate(params)))
+      result = JSON.parse(@native.sql(statement, Rivet.dump(params)))
       result.fetch("rows").each do |row|
         row.map! { |value| value.is_a?(Hash) ? value.fetch("blob").pack("C*") : value }
       end
@@ -136,7 +141,7 @@ module Rivet
     end
 
     def []=(key, value)
-      @native.kv_put(key.to_s, JSON.generate(value))
+      @native.kv_put(key.to_s, Rivet.dump(value))
       value
     end
 
@@ -149,7 +154,7 @@ module Rivet
     end
 
     def send(name, body)
-      @native.queue_send(name.to_s, JSON.generate(body))
+      @native.queue_send(name.to_s, Rivet.dump(body))
     end
 
     def next(*names, timeout: 0)

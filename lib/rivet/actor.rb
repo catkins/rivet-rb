@@ -21,7 +21,7 @@ module Rivet
       def initializer = @initializer
 
       def state(value = {}, &block)
-        @initializer = block || ->(_ctx, _input) { JSON.parse(JSON.generate(value)) }
+        @initializer = block || ->(_ctx, _input) { JSON.parse(Rivet.dump(value)) }
       end
 
       def action(name, &block)
@@ -79,7 +79,10 @@ module Rivet
           headers: data.fetch("headers"),
           body: data.fetch("body").pack("C*")
         )
-        status, headers, body = action_lock.synchronize { instance_exec(ctx, request, &handler) }
+        status, headers, body = action_lock.synchronize do
+          ctx.check_active!
+          instance_exec(ctx, request, &handler)
+        end
         {status: status, headers: headers, body: body.to_a.join.bytes}
       else
         handler = self.class.hooks[kind]
