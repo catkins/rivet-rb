@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM ruby:3.3-bookworm
+FROM ruby:4.0.9-bookworm
 
 # Magnus/rb_sys need Ruby headers (included above), a C compiler, libclang,
 # and current stable Rust. Pin the engine separately in compose.yaml.

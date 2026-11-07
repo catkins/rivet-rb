@@ -5,11 +5,14 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 
 echo "Checking native build prerequisites"
 packages=(
-  ruby
-  ruby-dev
   build-essential
   libclang-dev
   libssl-dev
+  libyaml-dev
+  libreadline-dev
+  zlib1g-dev
+  libffi-dev
+  libgmp-dev
   pkg-config
   curl
   ca-certificates
@@ -37,10 +40,40 @@ if ! rustup run stable rustc --version >/dev/null 2>&1; then
 fi
 rustup override set stable
 
+echo "Preparing Ruby from .ruby-version"
+ruby_version="$(cat .ruby-version)"
+ruby_prefix="$HOME/.local/share/rivet-ruby/$ruby_version"
+if [[ ! -x "$ruby_prefix/bin/ruby" ]]; then
+  ruby_build_dir="$(mktemp -d)"
+  trap 'rm -rf "$ruby_build_dir"' EXIT
+  curl -fsSL "https://cache.ruby-lang.org/pub/ruby/${ruby_version%.*}/ruby-$ruby_version.tar.xz" |
+    tar -xJ -C "$ruby_build_dir"
+  time (
+    cd "$ruby_build_dir/ruby-$ruby_version"
+    ./configure --prefix="$ruby_prefix" --disable-install-doc
+    make -j2
+    make install
+  )
+  rm -rf "$ruby_build_dir"
+  trap - EXIT
+fi
+export PATH="$ruby_prefix/bin:$PATH"
+
+profile_marker="# rivet-rb Ruby toolchain"
+if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+  cat >> "$HOME/.bash_profile" <<EOF
+
+$profile_marker
+if [[ "\$PWD" == "$PWD" || "\$PWD" == "$PWD/"* ]]; then
+  export PATH="\$HOME/.local/share/rivet-ruby/\$(cat "$PWD/.ruby-version")/bin:\$PATH"
+fi
+EOF
+fi
+
 echo "Installing locked Ruby dependencies"
 bundler_version="$(awk '/^BUNDLED WITH$/{getline; print $1}' Gemfile.lock)"
 if ! gem list --installed bundler --version "$bundler_version" >/dev/null; then
-  sudo gem install bundler --version "$bundler_version" --no-document
+  gem install bundler --version "$bundler_version" --no-document
 fi
 bundle config set --local path vendor/bundle
 time BUNDLE_FROZEN=true bundle check || time BUNDLE_FROZEN=true bundle install
