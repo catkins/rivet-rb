@@ -2,7 +2,7 @@
 
 Experimental Ruby actors and clients backed by the **real RivetKit Rust runtime**.
 Not a Ruby imitation of the engine, and no Node.js process is needed to host Ruby actors.
-Targets the WarpDrive-based **Rivet 3.0.0-preview.2** engine, pinned by image digest.
+Targets the WarpDrive-based **Rivet 3.0.6** engine, pinned by image digest.
 `rivetkit` and `rivetkit-core` are pinned to **3.0.6**. The TypeScript interoperability client
 remains at **2.3.30** to check compatibility with older clients.
 See [RESEARCH.md](RESEARCH.md) for the design, upstream sources and tradeoffs.
@@ -28,7 +28,7 @@ docker compose --profile test run --rm test
 
 This starts:
 
-- Rivet preview engine with a persistent `engine-preview-data` volume for WarpDrive's local log/cache,
+- Rivet 3.0.6 engine with a persistent `engine-preview-data` volume for WarpDrive's local log/cache,
   S3 object storage in `rivet-engine-preview`, and the `default` runner pool.
 - A Ruby runner hosting the counter and kitchen-sink examples.
 - [PGSTY Silo](https://github.com/pgsty/silo), pinned to `RELEASE.2026-10-26T00-00-00Z`, with a persistent volume and `rivet-local` bucket.
@@ -47,10 +47,10 @@ it is not a three-node replicated deployment or a test of disk-loss recovery.
 The development engine config caps its local log at 1 GiB and its disk cache at 256 MiB rather than
 auto-sizing them from host free space. Leave room for these plus Silo objects and Docker build caches.
 
-This is a **fresh preview deployment, not a 2.x data migration**. The new engine volume deliberately
-does not reuse the old `engine-data` RocksDB volume. Existing 2.x data is left untouched but is not
-available to the preview. Upstream has announced, but not yet shipped, a migration tool. Preview
-does not yet support multi-region, serverless, or ACLs; stay on 2.x if you need those features.
+This is a **3.x deployment, not a 2.x data migration**. The engine volume deliberately does not
+reuse the old `engine-data` RocksDB volume. Existing 2.x data is left untouched but is not available
+to this deployment. The volume and bucket retain their `preview` names so upgrading an existing
+Compose stack does not create empty storage.
 
 ```sh
 docker compose logs -f runner
@@ -88,8 +88,8 @@ precompiled platform gems are published.
 To use an existing engine, set `RIVET_ENDPOINT`, `RIVET_TOKEN`, `RIVET_NAMESPACE`,
 `RIVET_POOL_NAME` and `RIVETKIT_ENGINE_SPAWN=never`, then run `bundle exec ruby examples/server.rb`.
 The pool must already exist, as configured by `docker/init-engine.sh` in the Compose setup.
-Do not use `RIVETKIT_ENGINE_AUTO_DOWNLOAD=1` to test this preview: automatic engine selection
-is separate from the explicit preview image and storage configuration here.
+Do not use `RIVETKIT_ENGINE_AUTO_DOWNLOAD=1` to test this setup: automatic engine selection
+is separate from the explicitly pinned image and storage configuration here.
 Signal handling belongs to Ruby; the example handles INT/TERM and calls `registry.stop`.
 
 ### Amp orbs
@@ -279,7 +279,7 @@ The current binding uses Rivet's remote SQLite backend: SQL executes in the engi
 local database in the Ruby runner. Extension availability therefore depends on the engine build and
 connection settings, not on gems installed alongside the runner.
 
-The following were probed through the Ruby binding against the pinned Compose engine
+The following were probed through the Ruby binding against the previous Compose engine
 (`3.0.0-preview.2`) on 2026-11-07, which reported SQLite **3.46.0**. These are observations of that
 image, not guarantees for other Rivet deployments or future versions.
 
@@ -341,7 +341,7 @@ bash test/runner_restart.sh -f compose.yaml -f docker/compose.host.yaml
 
 This restarts the runner, checks the same actor ID with a new activation, and verifies persisted
 state, SQLite, KV, and a new WebSocket subscription. It interrupts existing runner connections.
-The preview can take over 40 seconds to release an active actor from the old runner; requests
+The engine can take over 40 seconds to release an active actor from the old runner; requests
 during recovery can hit client or gateway deadlines. The test retries only read-only `info` probes
 with a bounded recovery window, not mutations. Compose allows 45 seconds for runner shutdown
 because the SDK's advertised drain deadline is 30 seconds; the old 10-second grace period killed it.

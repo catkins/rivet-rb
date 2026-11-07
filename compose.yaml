@@ -24,7 +24,7 @@ x-ruby: &ruby
 
 services:
   engine:
-    image: rivetdev/engine:3.0.0-preview.2@sha256:5698157c4f44f98290bf25ac6c3b7465abe38ce34b7058057c14da56ab8590ce
+    image: rivetdev/engine:3.0.6@sha256:868535b3a3249c17111cf2ac77c98300800a2b9fc99dcb0410c4d62febc530f4
     command: [--config, /etc/rivet/config.json]
     environment:
       AWS_ALLOW_HTTP: "true"
@@ -44,7 +44,7 @@ services:
       start_period: 10s
 
   engine-init:
-    image: rivetdev/engine:3.0.0-preview.2@sha256:5698157c4f44f98290bf25ac6c3b7465abe38ce34b7058057c14da56ab8590ce
+    image: rivetdev/engine:3.0.6@sha256:868535b3a3249c17111cf2ac77c98300800a2b9fc99dcb0410c4d62febc530f4
     entrypoint: [/bin/sh, /init-engine.sh]
     environment:
       <<: *rivet-environment
@@ -90,7 +90,7 @@ services:
   runner:
     <<: *ruby
     command: [bundle, exec, ruby, examples/server.rb]
-    # Preview advertises a 30-second SDK drain deadline; do not SIGKILL it at 10s.
+    # Allow the 30-second SDK drain deadline; do not SIGKILL it at 10s.
     stop_grace_period: 45s
     depends_on:
       engine-init:

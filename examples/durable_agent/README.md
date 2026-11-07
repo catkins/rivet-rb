@@ -65,8 +65,10 @@ transaction until its result is saved; keep these tools short and free of networ
 `sleep_now` requests sleep; `destroy_agent` destroys the conversation. Normal idle sleep happens
 after five seconds. Activation starts the worker again and rebuilds the chat from SQLite. While
 working, `ctx.keep_awake` prevents idle sleep; it cannot prevent crashes or explicit shutdown.
-After a failed runner is replaced, the engine reactivates the actor and work resumes without a
-client request. The crash test checks this without polling the actor during recovery.
+On engine 3.0.0-preview.2, replacing a failed runner reactivated the actor without a client request.
+With engine 3.0.6, the no-poll recovery test times out after 100 seconds, including when run alone.
+The other crash tests recover through client requests, but unattended recovery is not currently
+verified on 3.0.6. Do not rely on runner replacement alone to resume work on this version.
 
 ## What survives an interruption
 
@@ -135,4 +137,4 @@ disk loss, or high-availability failover. Keep the engine and Silo volumes.
   reactivation reschedules them, but this is not a transactional outbox guaranteeing wake delivery
   through every engine failure. Unexpected non-provider exceptions stop the activation rather
   than being hidden in an unlimited retry loop.
-- This remains an experiment on the preview engine, not a production durability or HA guarantee.
+- This remains an experiment, not a production durability or HA guarantee.
