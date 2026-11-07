@@ -100,7 +100,10 @@ class DurableAgentTest < Minitest::Test
     assert_equal %w[system user assistant tool], roles(actor.snapshot)
     crash_runner
     release << true
+    resumed, finish = pause_next("/v1/chat/completions")
     start_runner
+    Timeout.timeout(100) { resumed.pop }
+    finish << true
     result = completed(actor, "safe-request", timeout: 100)
     assert_equal 1, count("/publish"), "a completed external tool ran twice"
     assert_equal 2, count("/lookup"), "safe interrupted tool was not retried"
@@ -118,7 +121,10 @@ class DurableAgentTest < Minitest::Test
     assert_equal "started", actor.snapshot.fetch("tools").first.fetch("status")
     crash_runner
     release << true
+    resumed, finish = pause_next("/v1/chat/completions")
     start_runner
+    Timeout.timeout(100) { resumed.pop }
+    finish << true
     result = completed(actor, "unsafe-request", timeout: 100)
     assert_equal 1, count("/publish"), "unsafe interrupted tool ran twice"
     assert_equal "interrupted", result.fetch("tools").first.fetch("status")
@@ -136,7 +142,10 @@ class DurableAgentTest < Minitest::Test
     Timeout.timeout(10) { entered.pop }
     crash_runner
     release << true
+    resumed, finish = pause_next("/v1/chat/completions")
     start_runner
+    Timeout.timeout(100) { resumed.pop }
+    finish << true
     result = completed(actor, "local-request", timeout: 100)
     assert_equal [{"key" => "colour", "value" => "green"}], result.fetch("notes")
     assert_equal 1, result.fetch("messages").count { |entry| entry.fetch("message")["tool_call_id"] == "call_remember" }

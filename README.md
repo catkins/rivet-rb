@@ -236,7 +236,7 @@ actor ID in the Rust handle. Independent creating handles can still race.
 | KV | `ctx.kv[key]`, `ctx.kv[key] = value`, `ctx.kv.delete(key)`; upstream-deprecated, backed by SQLite |
 | Queues | `ctx.queue.send(name, body)`, `ctx.queue.next(*names, timeout:)`, `queue(:name) { |ctx, body| ... }` for client-sent messages |
 | Queue clients | `handle.send_message(name, body)`, `send_and_wait(name, body, timeout:)` |
-| Scheduling | `ctx.after(seconds, action, *args)` |
+| Scheduling | `ctx.after(seconds, action, *args)`, `ctx.every(name, seconds, action, *args)`, `ctx.cancel_every(name)` |
 | Shutdown | `ctx.sleep`, `ctx.destroy`, `ctx.aborted?`, `registry.stop` |
 | Raw HTTP | `on_fetch { |ctx, request| [status, headers, body_chunks] }`, `handle.fetch(path, method:, headers:, body:)` |
 | S3 | Standard Ruby AWS SDK in actors; working Silo example and integration test |
@@ -252,8 +252,18 @@ Compose override for a SQLite-journaled text agent. It saves model messages and 
 reuses completed steps, retries safe interrupted tools, and reports interrupted unsafe writes as
 **outcome unknown** instead of replaying them. Request IDs deduplicate submissions; cancellation and
 retry state persist. The background `run` hook keeps status/cancel actions available during model I/O.
+On engine 3.0.6, a named recurring engine alarm resumes pending work after runner SIGKILL without
+client polling. The schedule is installed before accepting work and removed when no work remains;
+`keep_awake` alone only prevents local idle sleep. The model and tool crash tests exercise unattended
+recovery while preserving committed results, unsafe-tool non-replay and local transaction rollback.
 The example README explains crash boundaries and the limits relative to Pi Durable; this is not
 exactly-once external execution or a full Pi framework port. RubyLLM is optional, not a runtime gem dependency.
+
+`ctx.every` creates or updates an actor-scoped named interval schedule (at least five seconds).
+Reusing a name replaces its action and arguments, preserving the cadence if the interval is unchanged.
+Missed ticks are skipped, not replayed. `ctx.cancel_every` returns whether it removed the schedule;
+it does not interrupt a callback already running. These use the Rust SDK's durable scheduling and
+engine alarms, not Ruby timer threads. One-shot `ctx.after` schedules still have no cancellation API.
 
 ### SQLite and compatibility APIs
 
@@ -426,8 +436,9 @@ clients and runners **after** forking; do not inherit an initialized Tokio runti
   then cancels replies and aborts the runner task. If it times out it raises `Rivet::TimeoutError`;
   it does not kill Ruby threads, guarantee final persistence, or permit restart while callbacks live.
   Deadlines require MRI to schedule the dispatcher; native extensions that retain the GVL can delay it.
-- No workflows, cron management, schedule cancellation/listing, raw streaming WebSockets, hibernation
-  callbacks, serverless HTTP hosting, schema generation, or Fiber scheduler integration yet.
+- No workflows, cron expressions, schedule listing or one-shot cancellation, raw streaming
+  WebSockets, hibernation callbacks, serverless HTTP hosting, schema generation, or Fiber scheduler
+  integration yet. Named interval schedules can be cancelled with `ctx.cancel_every`.
 - Native operation failures raise `Rivet::Error`; binding deadlines raise its `Rivet::TimeoutError` subclass.
   Ruby argument/serialization failures retain their normal exception classes.
   Arbitrary Ruby exceptions are logged locally and go through Rivet's normal error boundary; this is

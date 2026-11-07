@@ -600,6 +600,23 @@ impl NativeContext {
                 .after(Duration::from_millis(delay_ms), &name, &bytes),
         )
     }
+    fn every(
+        &self,
+        name: String,
+        interval_ms: i64,
+        action: String,
+        args: String,
+    ) -> Result<(), Error> {
+        let bytes = encode(&parse(&args)?).map_err(error)?;
+        wait(
+            self.0
+                .inner()
+                .cron_every(&name, interval_ms, &action, &bytes, None),
+        )
+    }
+    fn cancel_every(&self, name: String) -> Result<bool, Error> {
+        wait(self.0.inner().cron_delete(&name))
+    }
     fn queue_send(&self, name: String, body: String) -> Result<u64, Error> {
         let body = encode(&parse(&body)?).map_err(error)?;
         Ok(wait(self.0.inner().queue().send(&name, &body))?.id)
@@ -679,6 +696,8 @@ pub fn init(ruby: &Ruby, module: magnus::RModule) -> Result<(), Error> {
     context.define_method("kv_put", method!(NativeContext::kv_put, 2))?;
     context.define_method("kv_delete", method!(NativeContext::kv_delete, 1))?;
     context.define_method("schedule", method!(NativeContext::schedule, 3))?;
+    context.define_method("every", method!(NativeContext::every, 4))?;
+    context.define_method("cancel_every", method!(NativeContext::cancel_every, 1))?;
     context.define_method("queue_send", method!(NativeContext::queue_send, 2))?;
     context.define_method("queue_next", method!(NativeContext::queue_next, 2))?;
     let conn = module.define_class("NativeConnection", ruby.class_object())?;

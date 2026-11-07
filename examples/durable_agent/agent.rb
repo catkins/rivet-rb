@@ -43,6 +43,7 @@ class DurableAgent < Rivet::Actor
     SQL
     ctx.sql.execute("CREATE TABLE IF NOT EXISTS agent_notes (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     @wake = ::Queue.new
+    ctx.every("agent-recovery", 5, :wake)
     @wake << true
   end
 
@@ -57,6 +58,7 @@ class DurableAgent < Rivet::Actor
     unless [prompt, request_id].all? { |value| value.is_a?(String) && !value.empty? }
       raise ArgumentError, "prompt and request_id must be nonempty strings"
     end
+    ctx.every("agent-recovery", 5, :wake)
     ctx.sql.transaction do |tx|
       existing = tx.query("SELECT prompt FROM agent_runs WHERE id = ?", request_id).first
       raise ArgumentError, "request_id already belongs to another prompt" if existing && existing.fetch("prompt") != prompt
@@ -96,7 +98,14 @@ class DurableAgent < Rivet::Actor
     nil
   end
 
-  action(:wake) { |_ctx| @wake << true; nil }
+  action :wake do |ctx|
+    if ctx.sql.query("SELECT id FROM agent_runs WHERE status IN ('queued', 'running', 'retry') LIMIT 1").empty?
+      ctx.cancel_every("agent-recovery")
+    end
+    @wake << true
+    nil
+  end
+
   action(:sleep_now) { |ctx| ctx.sleep; nil }
   action(:destroy_agent) { |ctx| ctx.destroy; nil }
 

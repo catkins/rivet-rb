@@ -129,7 +129,7 @@ module Rivet
     # @return [Queue] internal queue, separate from client queue handlers
     def queue = @queue ||= Queue.new(@native)
 
-    # Schedule an action after a delay; no cancellation/listing API is exposed.
+    # Schedule a one-shot action; it has no cancellation/listing API.
     # @param seconds [Numeric] nonnegative seconds, truncated to milliseconds
     # @param action [String, Symbol] declared action name
     # @param args [Array<Object>] positional JSON-compatible arguments
@@ -140,6 +140,33 @@ module Rivet
       check_active!
       raise ArgumentError, "delay must be nonnegative" if seconds < 0
       @native.schedule((seconds * 1000).to_i, action.to_s, Rivet.dump(args))
+    end
+
+    # Create or update a durable named interval schedule. Reusing a name replaces
+    # its action/arguments without resetting an unchanged interval's cadence.
+    # Missed intervals are skipped, not replayed. The engine alarm can wake a
+    # sleeping actor or recover a lost runner without a client request.
+    # @param name [String, Symbol] nonempty actor-scoped schedule name
+    # @param seconds [Numeric] finite interval of at least five seconds
+    # @param action [String, Symbol] declared action name
+    # @param args [Array<Object>] positional JSON-compatible arguments
+    # @return [nil]
+    # @raise [ArgumentError] invalid interval
+    # @raise [Error] callback has expired or native scheduling fails
+    def every(name, seconds, action, *args)
+      check_active!
+      raise ArgumentError, "interval must be finite and at least five seconds" unless seconds.finite? && seconds >= 5
+      @native.every(name.to_s, (seconds * 1000).to_i, action.to_s, Rivet.dump(args))
+    end
+
+    # Remove a named interval schedule and its history; does not cancel an
+    # action already in flight.
+    # @param name [String, Symbol] actor-scoped schedule name
+    # @return [Boolean] whether a schedule was removed
+    # @raise [Error] callback has expired or native cancellation fails
+    def cancel_every(name)
+      check_active!
+      @native.cancel_every(name.to_s)
     end
 
     private

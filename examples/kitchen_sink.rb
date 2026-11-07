@@ -106,6 +106,14 @@ class KitchenSink < Rivet::Actor
     ctx.after(delay, :kv_put, "scheduled", value)
   end
 
+  action :schedule_every do |ctx, name, interval, value|
+    ctx.every(name, interval, :emit, "interval", value)
+  end
+
+  action :cancel_every do |ctx, name|
+    ctx.cancel_every(name)
+  end
+
   action :sleep_now do |ctx|
     ctx.sleep
     nil

@@ -18,7 +18,7 @@ docker compose -f compose.yaml -f examples/durable_agent/compose.yaml exec runne
   'Remember that my favourite colour is green, then recall it.'
 ```
 
-This uses the base stack's Rivet preview engine and Silo storage, but replaces the counter runner
+This uses the base stack's Rivet 3.0.6 engine and Silo storage, but replaces the counter runner
 with the agent runner. Do not leave another runner with different actor registrations in the same
 pool. The default model is `gpt-4.1-mini`. Set `AGENT_MODEL`, `AGENT_PROVIDER` and the matching provider
 credential to use another model; this example wires OpenAI and Anthropic credentials.
@@ -65,10 +65,22 @@ transaction until its result is saved; keep these tools short and free of networ
 `sleep_now` requests sleep; `destroy_agent` destroys the conversation. Normal idle sleep happens
 after five seconds. Activation starts the worker again and rebuilds the chat from SQLite. While
 working, `ctx.keep_awake` prevents idle sleep; it cannot prevent crashes or explicit shutdown.
-On engine 3.0.0-preview.2, replacing a failed runner reactivated the actor without a client request.
-With engine 3.0.6, the no-poll recovery test times out after 100 seconds, including when run alone.
-The other crash tests recover through client requests, but unattended recovery is not currently
-verified on 3.0.6. Do not rely on runner replacement alone to resume work on this version.
+
+Unattended recovery on engine 3.0.6 needs an engine alarm, not just that local idle-sleep guard.
+The example installs one named five-second interval schedule, `agent-recovery`, **before** committing
+a submission, and restores it on activation. Reusing its name updates the same schedule instead of
+adding timers. While work is pending, its `wake` action nudges the worker; when no queued, running
+or retrying runs remain, the action removes the schedule so the actor can stay asleep.
+Cleanup and submission share the action mutex, so cleanup cannot remove a newly submitted run's wake.
+
+The SDK persists the next interval before dispatching the current action. This leaves another alarm
+even if the runner dies during that action or during a long model/tool request. In 3.0.6, an alarm
+on an actor assigned to a lost runner checks the runner and requests reallocation. Simply starting
+a replacement runner supplies no such wake. The original no-poll model-crash test failed after
+100 seconds without the schedule and passes with it. Model, safe-tool, unsafe-tool and local SQL
+crash tests now wait for resumed provider traffic **without any client request after replacement**.
+Recovery still takes tens of seconds while the engine detects the lost runner; five seconds is
+the schedule cadence, not a recovery deadline.
 
 ## What survives an interruption
 
@@ -133,8 +145,11 @@ disk loss, or high-availability failover. Keep the engine and Silo volumes.
 - Cancellation is cooperative, not forced HTTP interruption. Blocking requests have timeouts.
   Background hooks use bounded callback slots (`background_workers: 16` by default); use more
   runner processes or adjust admission deliberately for more simultaneously active conversations.
-- Database commits and schedule creation are separate operations. Retry times survive, and
-  reactivation reschedules them, but this is not a transactional outbox guaranteeing wake delivery
-  through every engine failure. Unexpected non-provider exceptions stop the activation rather
-  than being hidden in an unlimited retry loop.
+- Schedule creation and journal commits are separate operations. Installing the recovery schedule
+  first avoids accepting a new run with no schedule; a crash before the run commits can leave an
+  unused schedule, which the next wake removes. Retry times survive and the worker respects them
+  even when a recovery tick arrives early. This is not a transactional outbox or a guarantee of
+  wake delivery through every engine/storage failure. Unexpected non-provider exceptions stop the
+  activation; pending work can be attempted again on reactivation and needs operator attention if
+  the exception persists.
 - This remains an experiment, not a production durability or HA guarantee.

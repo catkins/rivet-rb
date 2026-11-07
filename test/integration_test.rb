@@ -144,6 +144,21 @@ class IntegrationTest < Minitest::Test
     assert_equal({"alarm" => true}, eventually { @actor.kv_get("scheduled") })
   end
 
+  def test_named_interval_schedule_replaces_repeats_and_cancels
+    @actor.connect do |connection|
+      subscription = connection.on(:interval)
+      assert_raises(Rivet::Error) { connection.schedule_every("tick", 4.999, "invalid") }
+      connection.schedule_every("tick", 5, "old")
+      connection.schedule_every("tick", 5, {"new" => [7, false]})
+      2.times do
+        assert_equal [{"new" => [7, false]}], subscription.poll(timeout: 7)
+      end
+      assert connection.cancel_every("tick")
+      refute connection.cancel_every("tick")
+      assert_nil subscription.poll(timeout: 5.5)
+    end
+  end
+
   def test_raw_http_request_and_binary_response
     response = @actor.fetch("/echo?x=1", method: "POST", body: "\x00\xff\x41".b)
     assert_equal 201, response.status
