@@ -1,0 +1,14 @@
+# Apply from the repository root, after the base compose.yaml.
+services:
+  runner:
+    command: [bundle, exec, ruby, examples/durable_agent/server.rb]
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AGENT_MODEL: ${AGENT_MODEL:-gpt-4.1-mini}
+      AGENT_PROVIDER: ${AGENT_PROVIDER:-openai}
+      AGENT_PROTOCOL: ${AGENT_PROTOCOL:-}
+      AGENT_API_BASE: ${AGENT_API_BASE:-}
+      AGENT_TOOL_ENDPOINT: ${AGENT_TOOL_ENDPOINT:-}
+  test:
+    command: [bundle, exec, ruby, -Itest, test/durable_agent_test.rb]

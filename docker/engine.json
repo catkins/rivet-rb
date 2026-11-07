@@ -4,7 +4,9 @@
   "api_peer": { "host": "0.0.0.0", "advertise_address": "engine:6421" },
   "storage": {
     "log_directory": "/data",
-    "auto_provision_partitions": 1
+    "auto_provision_partitions": 1,
+    "log_shard": { "max_disk_bytes": 1073741824 },
+    "cold_store": { "disk_cache_bytes": 268435456 }
   },
   "object_storage": {
     "primary": {

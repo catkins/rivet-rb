@@ -310,3 +310,44 @@ not as proof that every upstream task has terminated or external side effects ha
 Structured application errors, event-buffer backpressure, client-wide disposal and operational
 load/recovery testing remain work before production use. Poll-only event buffers remain unbounded;
 the callback admission cap does not apply to client event subscriptions.
+
+## Ruby 4 and durable-agent follow-up
+
+The gem now requires MRI Ruby 4+, with development pinned to Ruby 4.0.9. This does not enable Ractors:
+native waits release the GVL, but Ruby callbacks still execute on Ruby-created threads in the main
+Ractor. README covers thread ownership, cancellation, fork restrictions, SQLite extensions/types and
+the limits of a future Sequel adapter. Public Ruby APIs have YARD documentation.
+
+The lifecycle gap above is partly covered by activation-scoped `run` and `ctx.keep_awake`. Background
+callbacks have their own admission limit (16 by default), while sharing the bounded native work
+channel. They do not take the action mutex; application state still needs synchronization.
+
+`examples/durable_agent` uses RubyLLM 2.1.1 without Rails or ActiveRecord. SQLite journals requests,
+messages, tool intents/results and retry/cancellation state. `generate` separates model requests
+from individual tool execution. Committed results are reused; interrupted safe tools replay;
+interrupted unsafe tools retain their original call IDs and return an unknown-outcome result.
+Local SQL tool changes and their result commit in one transaction. This covers Pi Durable's core
+model/tool interruption rules, not its complete task framework or exactly-once remote effects.
+
+The hard-kill tests exposed a binding bug: initial managed state was held only in the Ruby bridge,
+so Rivet could commit an initialized actor with empty snapshot bytes. Restoration then failed with
+CBOR unexpected EOF before any Ruby hook ran. The adapter now installs the encoded initial state
+through core's `set_state_initial` before the startup-ready handshake. Existing invalid snapshots
+are not silently repaired or reset; use new actor keys for this experiment or migrate explicitly.
+
+Validation used the native debug build on Ruby 4.0.9, the pinned preview engine and Silo:
+
+- Existing suite: 22 tests / 130 assertions; durable-agent suite: 6 tests / 49 assertions.
+  No failures, errors or skips. These were separate runs covering every Ruby test file.
+- Actual SIGKILL at model, safe/unsafe tool and open SQL transaction boundaries. A transaction-only
+  marker is absent after recovery, distinguishing rollback from simply repeating an idempotent write.
+- A further model-crash run passed without client polling during recovery: the engine reactivated
+  the actor and repeated the uncommitted model request in about 49 seconds.
+- TypeScript 2.3.30 and 3.0.6 interoperability passed; Clippy with warnings denied, rustfmt, Compose
+  validation and whitespace checks passed. YARD reported 100% documented with no undocumented objects.
+
+The local provider is a deterministic HTTP fixture, not a paid-model quality or protocol-completeness
+test. No HA, engine-disk-loss or release-profile proof was added. See the example README for recovery
+boundaries, durable attachment limitations and the non-atomic gap between database commits and
+scheduled wakes. The development engine now uses explicit 1 GiB log / 256 MiB cache limits after
+auto-sizing prevented startup on this orb's nearly full disk.
