@@ -238,6 +238,9 @@ name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "cc"
@@ -1081,6 +1084,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "linux-raw-sys"
+version = "0.4.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab"
+
+[[package]]
 name = "litemap"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1494,6 +1503,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "procfs"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc5b72d8145275d844d4b5f6d4e1eef00c8cd889edb6035c21675d1bb1f45c9f"
+dependencies = [
+ "bitflags",
+ "hex",
+ "procfs-core",
+ "rustix",
+]
+
+[[package]]
+name = "procfs-core"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "239df02d8349b06fc07398a3a1697b06418223b1c7725085e801e7c0fc6a12ec"
+dependencies = [
+ "bitflags",
+ "hex",
+]
+
+[[package]]
 name = "prometheus"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1502,8 +1533,10 @@ dependencies = [
  "cfg-if",
  "fnv",
  "lazy_static",
+ "libc",
  "memchr",
  "parking_lot",
+ "procfs",
  "protobuf",
  "thiserror 2.0.21",
 ]
@@ -1849,16 +1882,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "rivet-depot-client-types"
-version = "2.3.30"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1af191e6784140ba6137076e42132b1a1ef9a6f9c5c0c5d391ed0b76e477e547"
-
-[[package]]
 name = "rivet-envoy-client"
-version = "2.3.30"
+version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "abd629cfeca99edef9bdf8314bd0132cff8a10637d8b3c0a88b071c9ab7f1fa1"
+checksum = "d9d6917773f6e6d79b369594af758b43cbf6cafee9976eea2015ba1d7d37e690"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -1868,11 +1895,7 @@ dependencies = [
  "rand 0.8.8",
  "rivet-envoy-protocol",
  "rivet-metrics",
- "rivet-util-serde",
  "rustls",
- "scc",
- "serde",
- "serde_bare",
  "serde_json",
  "tokio",
  "tokio-tungstenite",
@@ -1885,9 +1908,9 @@ dependencies = [
 
 [[package]]
 name = "rivet-envoy-protocol"
-version = "2.3.30"
+version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f639ad21599a0a0d1d53df9565aee45f309900f2a6d41ca91e6a374e3f7feb15"
+checksum = "4b5b4151d9b27b1f6be4a3b7acd6c8f0ee71bcc107c0e9674032ba5941590883"
 dependencies = [
  "anyhow",
  "hex",
@@ -1898,13 +1921,14 @@ dependencies = [
  "utoipa",
  "vbare",
  "vbare-compiler",
+ "vbare-gen",
 ]
 
 [[package]]
 name = "rivet-error"
-version = "2.3.30"
+version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43b47a64f2b9566a075e20db96cd405c2f8bd338cfa9f3e8d54139d413e05987"
+checksum = "b8e98c7b7e566267ab7a9da7f1653f99913a6cd0ba843573c5aedc62f3502f34"
 dependencies = [
  "anyhow",
  "indoc",
@@ -1915,11 +1939,10 @@ dependencies = [
 
 [[package]]
 name = "rivet-error-macros"
-version = "2.3.30"
+version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bb5366b0d323d48f5e620a01d417731d0aafdf36a226e8f5420f3534608d425"
+checksum = "325f35ad618c616a13e04171a5f03fc18082bd77ae5eed4ac48afe00b8e886df"
 dependencies = [
- "indoc",
  "proc-macro2",
  "quote",
  "serde_json",
@@ -1928,24 +1951,23 @@ dependencies = [
 
 [[package]]
 name = "rivet-metrics"
-version = "2.3.30"
+version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f51850197d8cd2f0a23dba2eec44a5979801e7ee9b94e5d96b9fa9d0766365e"
+checksum = "1c4631db78fa46f6db2f724d89d70f15cd3d93c4493d01e40198101a99df585c"
 dependencies = [
  "lazy_static",
+ "parking_lot",
  "prometheus",
 ]
 
 [[package]]
-name = "rivet-util-serde"
-version = "2.3.30"
+name = "rivet-sqlite-types"
+version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28b52a25a18e212a370e54f39093d39920f1fbc7f89d46a1ed31d66f7624acf2"
+checksum = "7612bdb7e272b99078d2b9c67572966a2819364f400a78095c08118627192aa0"
 dependencies = [
- "indexmap 2.14.2",
+ "bytes",
  "serde",
- "serde_json",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -1967,9 +1989,9 @@ dependencies = [
 
 [[package]]
 name = "rivetkit"
-version = "2.3.30"
+version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d5a977b636416f4a071f88ed31bc64f099af64dc32f5b83d5cf69664ef03a40"
+checksum = "668db84513a6cfff1d39d07a2686f2712ec8e1f6df39a7ca82257be55df3325c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1992,9 +2014,9 @@ dependencies = [
 
 [[package]]
 name = "rivetkit-actor-persist"
-version = "2.3.30"
+version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ca9799cc7bc7090975f3167eaee224b32eaa26092059a0ca494cc4f6d47366b"
+checksum = "b6eed8d069ab2557279cbd08e59f302534090aa26341fba7ac096608628af2f0"
 dependencies = [
  "anyhow",
  "serde",
@@ -2006,9 +2028,9 @@ dependencies = [
 
 [[package]]
 name = "rivetkit-client"
-version = "2.3.30"
+version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9ec86d642ca5b4541611c1dafca28185c27ab4f5d8ba02d6dc1c8c0f447b0c5"
+checksum = "c0697130e3b54fa42d640ca433ddc498e6b63da4622b82472e12cb4fc8a3ebc8"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2020,6 +2042,7 @@ dependencies = [
  "parking_lot",
  "reqwest",
  "rivetkit-client-protocol",
+ "rivetkit-shared-types",
  "scc",
  "serde",
  "serde_bare",
@@ -2036,13 +2059,12 @@ dependencies = [
 
 [[package]]
 name = "rivetkit-client-protocol"
-version = "2.3.30"
+version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e789d274525a68b9a6c3617877f5b164c348fee1403fbc704e0b1d246f6dc47"
+checksum = "83b383359a26537cc055e3849aa143f69d72cbe64d682005668f41305a393157"
 dependencies = [
  "anyhow",
  "serde",
- "serde_bare",
  "serde_bytes",
  "vbare",
  "vbare-compiler",
@@ -2050,9 +2072,9 @@ dependencies = [
 
 [[package]]
 name = "rivetkit-core"
-version = "2.3.30"
+version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05e0514e1af85dee5cecb83e6f345772efb61876c11dec41c771bcde705a262a"
+checksum = "e261c87d6ea1a35537920e1f84cd8316b3ef1b04ba8f8d7c7e8f48659dc5f57b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2077,10 +2099,10 @@ dependencies = [
  "parking_lot",
  "rand 0.8.8",
  "reqwest",
- "rivet-depot-client-types",
  "rivet-envoy-client",
  "rivet-error",
  "rivet-metrics",
+ "rivet-sqlite-types",
  "rivetkit-actor-persist",
  "rivetkit-client-protocol",
  "rivetkit-engine-process",
@@ -2110,9 +2132,9 @@ dependencies = [
 
 [[package]]
 name = "rivetkit-engine-process"
-version = "2.3.30"
+version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3704e906d57a73d4f87f4a5481afd8341865726bbdf725cfcc14a516b316ef0e"
+checksum = "0b6e82c217b2a9c3ccc05d9bbca8036313ec0bdca917411a9c64d420812ebd47"
 dependencies = [
  "anyhow",
  "libc",
@@ -2128,13 +2150,12 @@ dependencies = [
 
 [[package]]
 name = "rivetkit-inspector-protocol"
-version = "2.3.30"
+version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "efb79f503b0498b0c6320301820c3acbfb3794efbec6312f094b4c0c376f6a2d"
+checksum = "03385f31e920941cbf1611337191805cee4331b0bc83c1cc15cdc56c2760f03f"
 dependencies = [
  "anyhow",
  "serde",
- "serde_bare",
  "serde_bytes",
  "vbare",
  "vbare-compiler",
@@ -2142,12 +2163,13 @@ dependencies = [
 
 [[package]]
 name = "rivetkit-shared-types"
-version = "2.3.30"
+version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "122ef6d7c311c0f3b431e97adf6acbac23353f3a133116c07580f8f37b9ec802"
+checksum = "8642fb6b5d576f8930ea5e3c127f09a1f534129b67bf54fcdfdc063302087309"
 dependencies = [
  "serde",
  "serde_json",
+ "url",
 ]
 
 [[package]]
@@ -2155,6 +2177,19 @@ name = "rustc-hash"
 version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
+
+[[package]]
+name = "rustix"
+version = "0.38.44"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdb5bc1ae2baa591800df16c9ca78619bf65c0488b41b96ccec5d11220d8c154"
+dependencies = [
+ "bitflags",
+ "errno",
+ "libc",
+ "linux-raw-sys",
+ "windows-sys 0.52.0",
+]
 
 [[package]]
 name = "rustls"
@@ -3031,20 +3066,21 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vbare"
-version = "0.0.5"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4da8f87c236f82b06387d70dbdd9dad164b8bdf2cc839b0d07378c8cfd2de701"
+checksum = "87364915bb604e9dab8d05a0b319135f355674a37bc5fd0a54aaffb2d83c093d"
 dependencies = [
  "anyhow",
+ "bytes",
+ "serde",
 ]
 
 [[package]]
 name = "vbare-compiler"
-version = "0.0.5"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18428cb434c3f2e49ae908b9ee963741320d859c0ddd4e24f8a724f2daea3244"
+checksum = "5c73f2fcd845e47a954dca95645925d64f9bfb7455febdb4c00edd0cc511dbc2"
 dependencies = [
- "indoc",
  "prettyplease",
  "syn 2.0.119",
  "vbare-gen",
@@ -3052,16 +3088,15 @@ dependencies = [
 
 [[package]]
 name = "vbare-gen"
-version = "0.0.5"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1cfbe99d7877d9a4baeade691b87dc22cef572c158f0f1ca3382ebbfb1ab48e"
+checksum = "43a93a1d4c831d6b0d43075e11079de97b18f945e35d2953d2d5d340a68d2624"
 dependencies = [
  "heck",
  "pest",
  "pest_derive",
  "proc-macro2",
  "quote",
- "serde",
  "syn 2.0.119",
 ]
 

@@ -12,15 +12,22 @@ threads and use the existing Rust actor runner, rather than reimplementing the r
 - [SlateDB Ruby binding](https://github.com/catkins/slatedb-rb): Ruby keyword/block wrappers, shared Tokio runtime and no-GVL waits around native I/O.
 - [Silo](https://github.com/pgsty/silo): local S3-compatible object storage and bundled `mcli` (`mc` alias).
 
-The crate index also contains `3.0.0-preview.2`. That preview differs from current main in actor,
-action, context, registry, startup and persistence code. Packaged **2.3.30** source matched all checked
-`src/` files for `rivetkit` (16), `rivetkit-core` (63), and `rivetkit-client` (16). Pin stable exactly.
+The original implementation pinned **2.3.30**. Its packaged source matched all checked `src/`
+files for `rivetkit` (16), `rivetkit-core` (63), and `rivetkit-client` (16). A later comparison
+found that the top-level `3.0.0-preview.2` API was essentially unchanged; most apparent differences
+were omitted tests, while runtime changes were in core.
 The published crate's repository metadata names `rivet-ee`, but its packaged SDK source is inspectable
 and matched the public monorepo. Use published packages; no Git checkout or Rivet fork is required to build.
 
+The Rust dependencies now pin **3.0.6**, the latest non-yanked release checked on 2026-11-07.
+Unlike preview.2, this release removes high-level actor state, connection state and queue handlers.
+The Ruby binding retains those APIs through core's public factory, snapshot and queue events,
+while continuing to use the high-level actor runner for actions, connections and lifecycle hooks.
+The TypeScript interoperability client stays at **2.3.30** to check older-client compatibility.
+
 ### Rivet 3.0 preview engine
 
-The runnable stack now targets **3.0.0-preview.2**, while retaining the **2.3.30 SDKs** above.
+The runnable stack targets **3.0.0-preview.2**, independently of the Rust SDK pin above.
 The [preview announcement](https://rivet.dev/changelog/2026-10-26-introducing-rivet-3-0-preview/)
 explicitly retains the 2.x SDK/protocol; a matching SDK version number is not required.
 The [published release](https://github.com/rivet-dev/rivet/releases/tag/v3.0.0-preview.2)
@@ -85,18 +92,21 @@ Ruby DSL / actor instances                  Ruby client / subscriptions
 Ruby actor -- aws-sdk-s3 --> Silo (separate blob storage)
 ```
 
-One Rust `RubyActor` implements the public `Actor` trait. Its state/input/connection state are
-`serde_json::Value`; the associated Rust types remain serializable and Send/Sync. No Ruby `VALUE`,
+One Rust `RubyActor` implements the public `Actor` trait. Input and connection parameters use
+`serde_json::Value`; each activation's broker owns its JSON state behind a native mutex, and
+connection state uses the core connection handle's CBOR bytes. No Ruby `VALUE`,
 Proc or exception crosses into Tokio or is stored in a Rust collection.
 
-Dynamic `ActionSet` and `QueueSet` implementations check the Ruby declarations before dispatching.
-Unknown names return `None`, preserving Rivet's action-not-found path. `Actor::Action = Raw` alone is
+Dynamic `ActionSet` and core queue-event dispatch check the Ruby declarations before calling Ruby.
+Unknown names preserve Rivet's not-found errors. `Actor::Action = Raw` alone is
 **not** a wildcard dispatcher. The inspector gets owned action names through the pinned core config.
 
-We use the public, currently deprecated `Registry::register_with` entry to scope a callback broker
-per registry activation with Tokio task-local storage, then call the standard `run_actor`. This avoids
-a global singleton registry and avoids copying Rivet's startup, snapshot, final-save and connection
-machinery. After creation the Rust actor owns its broker directly, including for spawned action tasks.
+We use core's public `ActorFactory` with explicit startup readiness. The broker restores the state
+snapshot or calls Ruby's state initializer, then scopes the standard `run_actor` with Tokio task-local
+storage. A receive loop handles state serialization and declared Ruby queue callbacks and forwards
+other events to the standard runner. This keeps core's persistence/final-save machinery and the
+runner's lifecycle/connection handling without a global singleton registry. After creation the Rust
+actor owns its broker directly, including for spawned action tasks.
 `serve_with_config` and a cancellation token leave signals and process ownership with Ruby.
 
 The Ruby registry polls for native callback requests, dispatches them on Ruby-created threads, and
@@ -105,7 +115,8 @@ stay in Ruby containers where GC can see them. Native context/client I/O release
 small `rb-sys` boundary; native panics are caught before returning across that C boundary.
 
 State is held by Rust. The Ruby getter returns a frozen snapshot; `state=`/`update_state` write it
-back and mark it dirty through `Ctx`. This intentionally avoids porting JavaScript's deeply nested
+back and request a core save. Serialization supplies a CBOR `ActorState` delta through the same
+core persistence path as before. This intentionally avoids porting JavaScript's deeply nested
 write-through proxy to Ruby in an experiment. SQLite transactions use actual native transaction
 handles, not unrelated `BEGIN`/`COMMIT` queries through a pooled connection.
 

@@ -134,6 +134,8 @@ class IntegrationTest < Minitest::Test
     result = @actor.send_and_wait(:double, {"value" => 13}, timeout: 3)
     assert_equal "completed", result.fetch("status")
     assert_equal 26, result.fetch("response")
+    error = assert_raises(RuntimeError) { @actor.send_and_wait(:undeclared, {}, timeout: 3) }
+    assert_includes error.message, "actor/not_found"
   end
 
   def test_scheduled_actions
@@ -150,6 +152,8 @@ class IntegrationTest < Minitest::Test
 
   def test_state_sql_and_kv_survive_sleep_and_wake
     before = @actor.info
+    custom = {"text" => "日本語 🦀", "values" => [false, nil, -7, 3.25], "empty" => {}}
+    @actor.replace(before.fetch("state").merge("custom" => custom))
     @actor.sql_put("durable", "sqlite")
     @actor.kv_put("durable", {"answer" => 42})
     @actor.sleep_now
@@ -161,6 +165,7 @@ class IntegrationTest < Minitest::Test
     assert_equal 1, after.fetch("state").fetch("created")
     assert_operator after.fetch("state").fetch("starts"), :>=, 2
     assert_operator after.fetch("state").fetch("sleeps"), :>=, 1
+    assert_equal custom, after.fetch("state").fetch("custom")
     assert_equal [{"id" => "durable", "value" => "sqlite"}], @actor.sql_entries
     assert_equal({"answer" => 42}, @actor.kv_get("durable"))
   end

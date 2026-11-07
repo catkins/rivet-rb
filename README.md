@@ -3,8 +3,8 @@
 Experimental Ruby actors and clients backed by the **real RivetKit Rust runtime**.
 Not a Ruby imitation of the engine, and no Node.js process is needed to host Ruby actors.
 Targets the WarpDrive-based **Rivet 3.0.0-preview.2** engine, pinned by image digest.
-`rivetkit`, `rivetkit-core` and the TypeScript interoperability client stay pinned to **2.3.30**:
-[Rivet 3.0 retains the 2.x SDK and protocol](https://rivet.dev/changelog/2026-10-26-introducing-rivet-3-0-preview/).
+`rivetkit` and `rivetkit-core` are pinned to **3.0.6**. The TypeScript interoperability client
+remains at **2.3.30** to check compatibility with older clients.
 See [RESEARCH.md](RESEARCH.md) for the design, upstream sources and tradeoffs.
 
 ## Run the whole stack
@@ -74,8 +74,8 @@ precompiled platform gems are published.
 To use an existing engine, set `RIVET_ENDPOINT`, `RIVET_TOKEN`, `RIVET_NAMESPACE`,
 `RIVET_POOL_NAME` and `RIVETKIT_ENGINE_SPAWN=never`, then run `bundle exec ruby examples/server.rb`.
 The pool must already exist, as configured by `docker/init-engine.sh` in the Compose setup.
-Do not use `RIVETKIT_ENGINE_AUTO_DOWNLOAD=1` to test this preview: the pinned 2.x SDK's automatic
-engine selection is separate from the explicit preview image and storage configuration here.
+Do not use `RIVETKIT_ENGINE_AUTO_DOWNLOAD=1` to test this preview: automatic engine selection
+is separate from the explicit preview image and storage configuration here.
 Signal handling belongs to Ruby; the example handles INT/TERM and calls `registry.stop`.
 
 ## Server example: define and host an actor
@@ -204,6 +204,8 @@ it is not a Rack server adapter and does not support streaming bodies.
 
 The internal actor queue and the `queue` handler DSL are separate upstream APIs: `ctx.queue.send`
 enqueues for manual consumption with `next`; client `send_message`/`send_and_wait` dispatch a declared handler.
+Queues, like KV, are deprecated upstream in Rivet 3.0. The Ruby APIs remain available; new code
+should use actions and SQLite for pending work.
 
 ## Tests and interoperability
 

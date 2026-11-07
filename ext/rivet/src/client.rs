@@ -103,9 +103,11 @@ impl NativeHandle {
         let _guard = runtime().enter();
         NativeClientConnection(self.0.connect())
     }
+    #[allow(deprecated)]
     fn send(&self, name: String, body: String) -> Result<(), Error> {
         wait(self.0.send(&name, parse(&body)?, SendOpts::default()))
     }
+    #[allow(deprecated)]
     fn send_and_wait(&self, name: String, body: String, timeout_ms: u64) -> Result<String, Error> {
         let opts = SendAndWaitOpts {
             timeout: Some(Duration::from_millis(timeout_ms)),

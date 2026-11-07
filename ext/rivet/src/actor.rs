@@ -7,7 +7,8 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use magnus::{Error, Ruby, prelude::*};
-use rivetkit::{ActionSet, Actor, ConnCtx, Ctx, QueueSet};
+use rivetkit::{ActionSet, Actor, ConnCtx, Ctx};
+use rivetkit_core::{ActorEvent, ActorFactory, ActorStart, StateDelta};
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -18,12 +19,13 @@ tokio::task_local! { static BRIDGE: Arc<Bridge>; }
 
 pub struct Bridge {
     tx: mpsc::Sender<Callback>,
-    definitions: HashMap<String, Value>,
+    definitions: Arc<HashMap<String, Value>>,
+    state: Mutex<Value>,
 }
 
 impl Bridge {
     async fn call(
-        &self,
+        self: &Arc<Self>,
         ctx: Ctx<RubyActor>,
         kind: &str,
         data: Value,
@@ -33,6 +35,7 @@ impl Bridge {
         self.tx
             .send(Callback {
                 ctx,
+                bridge: self.clone(),
                 kind: kind.to_owned(),
                 data: data.to_string(),
                 conn,
@@ -40,6 +43,96 @@ impl Bridge {
             })
             .map_err(|_| anyhow!("Ruby dispatcher stopped"))?;
         rx.await.map_err(|_| anyhow!("Ruby callback dropped"))?
+    }
+
+    async fn queue(
+        self: Arc<Self>,
+        ctx: Ctx<RubyActor>,
+        name: String,
+        body: Vec<u8>,
+        conn: rivetkit::ConnHandle,
+    ) -> Result<rivetkit_core::QueueSendResult> {
+        if !self.definitions[ctx.name()]["queues"]
+            .as_array()
+            .is_some_and(|names| names.iter().any(|v| v == &name))
+        {
+            return Err(rivetkit_core::error::ActorRuntime::NotFound {
+                resource: "queue handler".to_owned(),
+                id: name,
+            }
+            .build());
+        }
+        let abort = ctx.abort_signal();
+        let data = json!({"name": name, "body": decode(&body)?});
+        let result = tokio::select! {
+            _ = abort.cancelled() => return Err(rivetkit_core::error::ActorLifecycle::Stopping.build()),
+            result = self.call(ctx, "queue", data, Some(conn.into())) => result?,
+        };
+        Ok(rivetkit_core::QueueSendResult {
+            status: rivetkit_core::QueueSendStatus::Completed,
+            response: Some(encode(&result)?),
+        })
+    }
+
+    async fn run(self: Arc<Self>, mut start: ActorStart) -> Result<()> {
+        let ctx = Ctx::new(start.ctx.clone());
+        let initial = async {
+            match start.snapshot.as_deref() {
+                Some(bytes) => decode(bytes),
+                None => {
+                    let input = match start.input.as_deref() {
+                        Some(bytes) => decode(bytes)?,
+                        None => Value::Null,
+                    };
+                    self.call(ctx.clone(), "create_state", input, None).await
+                }
+            }
+        }
+        .await;
+        match initial {
+            Ok(state) => *self.state.lock().unwrap() = state,
+            Err(error) => {
+                if let Some(reply) = start.startup_ready.take() {
+                    let _ = reply.send(Err(anyhow!("{error:#}")));
+                }
+                return Err(error);
+            }
+        }
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut events = std::mem::replace(&mut start.events, rx.into());
+        let runner = BRIDGE.scope(
+            self.clone(),
+            rivetkit::run_actor::<RubyActor>(rivetkit::start::wrap_start(start)?),
+        );
+        tokio::pin!(runner);
+        loop {
+            tokio::select! {
+                result = &mut runner => return result,
+                event = events.recv() => match event {
+                    Some(ActorEvent::SerializeState { reply, .. }) => {
+                        let state = encode(&self.state.lock().unwrap());
+                        reply.send(state.map(|bytes| vec![StateDelta::ActorState(bytes)]));
+                    }
+                    Some(ActorEvent::QueueSend { name, body, conn, reply, .. }) => {
+                        let bridge = self.clone();
+                        let ctx = ctx.clone();
+                        tokio::spawn(async move {
+                            reply.send_or_cancel(bridge.queue(ctx, name, body, conn)).await;
+                        });
+                    }
+                    Some(event) => {
+                        if tx.send(event).is_err() {
+                            return runner.await;
+                        }
+                    }
+                    None => {
+                        drop(tx);
+                        return runner.await;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -49,21 +142,11 @@ pub struct RubyActor {
 
 #[async_trait]
 impl Actor for RubyActor {
-    type State = Value;
     type Input = Value;
     type Actions = Self;
     type Events = ();
-    type Queue = Self;
     type ConnParams = Value;
-    type ConnState = Value;
     type Action = rivetkit::Raw;
-
-    async fn create_state(ctx: &Ctx<Self>, input: Value) -> Result<Value> {
-        BRIDGE
-            .get()
-            .call(ctx.clone(), "create_state", input, None)
-            .await
-    }
 
     async fn create(_ctx: &Ctx<Self>) -> Result<Self> {
         Ok(Self {
@@ -99,12 +182,6 @@ impl Actor for RubyActor {
             .map(|_| ())
     }
 
-    async fn create_conn_state(self: Arc<Self>, ctx: Ctx<Self>, params: Value) -> Result<Value> {
-        self.bridge
-            .call(ctx, "create_conn_state", params, None)
-            .await
-    }
-
     async fn on_before_connect(self: Arc<Self>, ctx: Ctx<Self>, params: &Value) -> Result<()> {
         self.bridge
             .call(ctx, "on_before_connect", params.clone(), None)
@@ -113,6 +190,11 @@ impl Actor for RubyActor {
     }
 
     async fn on_connect(self: Arc<Self>, ctx: Ctx<Self>, conn: ConnCtx<Self>) -> Result<()> {
+        let state = self
+            .bridge
+            .call(ctx.clone(), "create_conn_state", conn.params()?, None)
+            .await?;
+        conn.inner().set_state(encode(&state)?);
         self.bridge
             .call(ctx, "on_connect", Value::Null, Some(conn))
             .await
@@ -191,37 +273,10 @@ impl ActionSet<RubyActor> for RubyActor {
     }
 }
 
-impl QueueSet<RubyActor> for RubyActor {
-    fn entries() -> Vec<rivetkit::QueueEntry<Self>> {
-        Vec::new()
-    }
-
-    fn dispatch(
-        actor: Arc<Self>,
-        ctx: Ctx<Self>,
-        name: &str,
-        body: &[u8],
-    ) -> Option<Pin<Box<dyn Future<Output = Result<Option<Vec<u8>>>> + Send>>> {
-        if !actor.bridge.definitions[ctx.name()]["queues"]
-            .as_array()?
-            .iter()
-            .any(|v| v == name)
-        {
-            return None;
-        }
-        let name = name.to_owned();
-        let body = body.to_vec();
-        Some(Box::pin(async move {
-            let data = json!({"name": name, "body": decode(&body)?});
-            let result = actor.bridge.call(ctx, "queue", data, None).await?;
-            Ok(Some(encode(&result)?))
-        }))
-    }
-}
-
 #[magnus::wrap(class = "Rivet::NativeCallback", free_immediately, size)]
 pub struct Callback {
     ctx: Ctx<RubyActor>,
+    bridge: Arc<Bridge>,
     kind: String,
     data: String,
     conn: Option<ConnCtx<RubyActor>>,
@@ -236,7 +291,7 @@ impl Callback {
         self.data.clone()
     }
     fn context(&self) -> NativeContext {
-        NativeContext(self.ctx.clone())
+        NativeContext(self.ctx.clone(), self.bridge.clone())
     }
     fn connection(&self) -> Option<NativeConnection> {
         self.conn
@@ -282,9 +337,9 @@ impl NativeRunner {
             serde_json::from_str(&definitions).map_err(error)?;
         let options = parse(&options)?;
         let (tx, rx) = mpsc::channel();
-        let bridge = Arc::new(Bridge { tx, definitions });
-        let mut registry = rivetkit::Registry::new();
-        for (name, definition) in &bridge.definitions {
+        let definitions = Arc::new(definitions);
+        let mut registry = rivetkit_core::CoreRegistry::new();
+        for (name, definition) in definitions.iter() {
             let mut config = rivetkit::ActorConfig::default();
             config.has_state = true;
             config.has_database = true;
@@ -303,16 +358,24 @@ impl NativeRunner {
             if let Some(ms) = definition["state_save_interval_ms"].as_u64() {
                 config.state_save_interval = Duration::from_millis(ms);
             }
-            let bridge = bridge.clone();
-            #[allow(deprecated)]
-            registry.register_with::<RubyActor, _, _>(name, config, move |start| {
-                let bridge = bridge.clone();
-                async move { BRIDGE.scope(bridge, rivetkit::run_actor(start)).await }
-            });
+            let tx = tx.clone();
+            let definitions = definitions.clone();
+            registry.register(
+                name,
+                ActorFactory::new_with_manual_startup_ready(config, move |start| {
+                    let bridge = Arc::new(Bridge {
+                        tx: tx.clone(),
+                        definitions: definitions.clone(),
+                        state: Mutex::new(Value::Null),
+                    });
+                    Box::pin(bridge.run(start))
+                }),
+            );
         }
         let mut config = rivetkit::ServeConfig::from_env().map_err(error)?;
         if let Some(v) = options["endpoint"].as_str() {
             config.endpoint = v.to_owned();
+            config.engine_spawn = rivetkit::EngineSpawnMode::Never;
         }
         if let Some(v) = options["token"].as_str() {
             config.token = Some(v.to_owned());
@@ -363,7 +426,7 @@ impl NativeRunner {
 }
 
 #[magnus::wrap(class = "Rivet::NativeContext", free_immediately, size)]
-pub struct NativeContext(pub Ctx<RubyActor>);
+pub struct NativeContext(pub Ctx<RubyActor>, Arc<Bridge>);
 
 impl NativeContext {
     fn metadata(&self) -> String {
@@ -379,10 +442,11 @@ impl NativeContext {
         json!({"id": self.0.actor_id(), "name": self.0.name(), "key": key, "region": self.0.region()}).to_string()
     }
     fn state(&self) -> String {
-        self.0.state().to_string()
+        self.1.state.lock().unwrap().to_string()
     }
     fn set_state(&self, json: String) -> Result<(), Error> {
-        self.0.set_state(parse(&json)?);
+        *self.1.state.lock().unwrap() = parse(&json)?;
+        self.0.inner().request_save(Default::default());
         Ok(())
     }
     fn broadcast(&self, name: String, json: String) -> Result<(), Error> {
@@ -441,16 +505,16 @@ impl NativeContext {
         )
     }
     fn queue_send(&self, name: String, body: String) -> Result<u64, Error> {
-        let body = parse(&body)?;
-        Ok(wait(self.0.queue().send(&name, &body))?.id)
+        let body = encode(&parse(&body)?).map_err(error)?;
+        Ok(wait(self.0.inner().queue().send(&name, &body))?.id)
     }
     fn queue_next(&self, names: Vec<String>, timeout_ms: u64) -> Result<Option<String>, Error> {
-        let opts = rivetkit::QueueNextOpts {
+        let opts = rivetkit_core::QueueNextOpts {
             names: Some(names),
             timeout: Some(Duration::from_millis(timeout_ms)),
             ..Default::default()
         };
-        wait(self.0.queue().next(opts))?.map(|message| {
+        wait(self.0.inner().queue().next(opts))?.map(|message| {
             Ok(json!({"id": message.id, "name": message.name, "body": decode(&message.body).map_err(error)?, "created_at": message.created_at}).to_string())
         }).transpose()
     }
@@ -467,10 +531,13 @@ impl NativeConnection {
         Ok(self.0.params().map_err(error)?.to_string())
     }
     fn state(&self) -> Result<String, Error> {
-        Ok(self.0.state().map_err(error)?.to_string())
+        Ok(decode(&self.0.inner().state()).map_err(error)?.to_string())
     }
     fn set_state(&self, json: String) -> Result<(), Error> {
-        self.0.set_state(&parse(&json)?).map_err(error)
+        self.0
+            .inner()
+            .set_state(encode(&parse(&json)?).map_err(error)?);
+        Ok(())
     }
     fn send(&self, name: String, json: String) -> Result<(), Error> {
         self.0.send(&name, &parse(&json)?).map_err(error)
