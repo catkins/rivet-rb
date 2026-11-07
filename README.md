@@ -336,6 +336,15 @@ Buildkite runs [the CI pipeline](https://buildkite.com/catkins-test/rivet-rb) on
 queue, following the same mise setup as `slatedb-rb`. `.mise.toml` pins Ruby, Rust and Node;
 `.buildkite/hooks/post-checkout` installs native build libraries before mise installs Ruby.
 
+`.buildkite/cache.yml` defines Buildkite Cache entries for installed Bundler gems, Cargo registry
+downloads and npm downloads. Keys include the platform, Ruby/toolchain config and lockfiles;
+lockfile changes can restore an older dependency cache before the package manager reconciles it.
+The dedicated `rivet-rb` registry allows only this pipeline's `main` builds to save entries, while
+other branches can restore from `main`. The cluster's shared default registry is unchanged.
+Hosted cache volumes retain `/mise` toolchains and `target` build intermediates without archiving
+the large Rust build directory. Both caches are optional accelerators: misses rebuild normally,
+and compile, lint, docs and tests always run. Test results, logs and engine/Silo data are not cached.
+
 On a Linux machine with Docker, the same checks run with `mise run ci`. This compiles the extension,
 runs rustfmt and Clippy, renders YARD and requires 100% documentation coverage, then runs the full
 Ruby suite against real Rivet/Silo services and the TypeScript interoperability client. Skipped tests

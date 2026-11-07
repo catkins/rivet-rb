@@ -1,0 +1,33 @@
+caches:
+  - name: bundler
+    cache_key:
+      - "bundler-v1"
+      - agent: os
+      - agent: arch
+      - checksum: .ruby-version
+        fallback_limit: true
+      - checksum: [Gemfile, Gemfile.lock, rivet.gemspec]
+    target_paths:
+      - vendor/bundle
+
+  - name: cargo
+    cache_key:
+      - "cargo-downloads-v1"
+      - agent: os
+      - agent: arch
+      - checksum: .mise.toml
+        fallback_limit: true
+      - checksum: [Cargo.toml, Cargo.lock, ext/rivet/Cargo.toml]
+    target_paths:
+      - tmp/ci-cargo/registry
+
+  - name: npm
+    cache_key:
+      - "npm-downloads-v1"
+      - agent: os
+      - agent: arch
+      - checksum: .mise.toml
+        fallback_limit: true
+      - checksum: test/interop/package-lock.json
+    target_paths:
+      - tmp/ci-npm/_cacache

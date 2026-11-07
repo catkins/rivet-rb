@@ -25,6 +25,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+if [[ "${BUILDKITE:-}" == "true" ]]; then
+  echo "--- Restore dependency caches"
+  export CARGO_HOME="$PWD/tmp/ci-cargo"
+  export npm_config_cache="$PWD/tmp/ci-npm"
+  mkdir -p vendor/bundle "$CARGO_HOME/registry" "$npm_config_cache/_cacache"
+  buildkite-agent cache restore --download-timeout 2m
+fi
+
 echo "--- Install locked dependencies"
 bundler_version="$(awk '/^BUNDLED WITH$/{getline; print $1}' Gemfile.lock)"
 gem install bundler --version "$bundler_version" --no-document
@@ -36,6 +44,11 @@ echo "--- Build and lint before starting services"
 bundle exec rake compile
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
+
+if [[ "${BUILDKITE:-}" == "true" && "${BUILDKITE_BRANCH:-}" == "main" ]]; then
+  echo "--- Save dependency caches"
+  buildkite-agent cache save
+fi
 
 echo "--- Check YARD documentation"
 bundle exec yard doc --fail-on-warning

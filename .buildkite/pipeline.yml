@@ -1,11 +1,14 @@
 agents:
   queue: hosted-linux
 
-cache: ".buildkite/cache-volume"
+cache:
+  - "/mise"
+  - "target"
 
 env:
   MISE_GITHUB_ATTESTATIONS: "false"
   MISE_RUBY_GITHUB_ATTESTATIONS: "false"
+  BUILDKITE_AGENT_CACHE_REGISTRY: "rivet-rb"
 
 steps:
   - label: ":ruby: Ruby 4 / Rivet / Silo"
