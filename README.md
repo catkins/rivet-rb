@@ -3,8 +3,7 @@
 Experimental Ruby actors and clients backed by the **real RivetKit Rust runtime**.
 Not a Ruby imitation of the engine, and no Node.js process is needed to host Ruby actors.
 Targets the WarpDrive-based **Rivet 3.0.6** engine, pinned by image digest.
-`rivetkit` and `rivetkit-core` are pinned to **3.0.6**. The TypeScript interoperability client
-remains at **2.3.30** to check compatibility with older clients.
+`rivetkit`, `rivetkit-core` and the TypeScript interoperability client are pinned to **3.0.6**.
 See [RESEARCH.md](RESEARCH.md) for the design, upstream sources and tradeoffs.
 
 ## Examples
@@ -385,7 +384,7 @@ with a bounded recovery window, not mutations. Compose allows 45 seconds for run
 because the SDK's advertised drain deadline is 30 seconds; the old 10-second grace period killed it.
 This is eventual recovery, not uninterrupted service or a guarantee about unsaved state on SIGKILL.
 
-The optional interoperability test uses the actual TypeScript 2.3.30 client against Ruby actors:
+CI runs the real TypeScript **3.0.6** client against Ruby actors. To run that check locally:
 
 ```sh
 npm ci --prefix test/interop

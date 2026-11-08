@@ -23,7 +23,8 @@ The Rust dependencies now pin **3.0.6**, the latest non-yanked release checked o
 Unlike preview.2, this release removes high-level actor state, connection state and queue handlers.
 The Ruby binding retains those APIs through core's public factory, snapshot and queue events,
 while continuing to use the high-level actor runner for actions, connections and lifecycle hooks.
-The TypeScript interoperability client stays at **2.3.30** to check older-client compatibility.
+The TypeScript interoperability client now pins **3.0.6** to match the Rust SDK. Historical audit
+results below record the older **2.3.30** fixture used at the time.
 
 ### Rivet 3.0 preview engine
 
