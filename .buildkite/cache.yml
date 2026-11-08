@@ -10,17 +10,6 @@ caches:
     target_paths:
       - vendor/bundle
 
-  - name: cargo
-    cache_key:
-      - "cargo-downloads-v1"
-      - agent: os
-      - agent: arch
-      - checksum: .mise.toml
-        fallback_limit: true
-      - checksum: [Cargo.toml, Cargo.lock, ext/rivet/Cargo.toml]
-    target_paths:
-      - tmp/ci-cargo/registry
-
   - name: npm
     cache_key:
       - "npm-downloads-v1"
