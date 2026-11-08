@@ -336,17 +336,19 @@ Buildkite runs [the CI pipeline](https://buildkite.com/catkins-test/rivet-rb) on
 queue, following the same mise setup as `slatedb-rb`. `.mise.toml` pins Ruby, Rust and Node;
 `.buildkite/hooks/post-checkout` installs native build libraries before mise installs Ruby.
 
-`.buildkite/cache.yml` defines Buildkite Cache entries for installed Bundler gems and npm downloads.
-Keys include the platform, Ruby/toolchain config and lockfiles;
-lockfile changes can restore an older dependency cache before the package manager reconciles it.
+`.buildkite/cache.yml` defines Buildkite Cache entries for installed Bundler gems, Cargo sources
+and compiled crates, and npm downloads. Keys include the platform, Ruby/toolchain config and lockfiles.
+Bundler and npm can restore older entries after lockfile changes. The Rust cache can fall back after
+Rust source changes, but requires matching toolchain, dependency and build configuration checksums.
 The dedicated `rivet-rb` registry allows only this pipeline's `main` builds to save entries, while
 other branches can restore from `main`. The cluster's shared default registry is unchanged.
-Hosted cache volumes retain `/mise` toolchains, the Cargo registry at `/mise/rivet-rb-cargo`, and
-`target` build intermediates without archiving the large Rust build directory. Cargo's home stays
-at the same absolute path across jobs so dependency fingerprints do not reference deleted checkouts.
+Hosted cache volumes provide best-effort reuse of `/mise` toolchains. The keyed Rust cache restores
+Cargo's registry under `/mise/rivet-rb-cargo` and compiled crates under `/mise/rivet-rb-target`,
+without relying on the volume containing the latest outputs. Both paths stay at the same absolute
+location across jobs so dependency fingerprints do not reference deleted checkouts.
 Cargo still checks source, toolchain and build configuration changes before reusing compiled crates.
-Both caches are optional accelerators: misses rebuild normally,
-and compile, lint, docs and tests always run. Test results, logs and engine/Silo data are not cached.
+Caches are optional accelerators: misses rebuild normally, and compile, lint, docs and tests always
+run. Test results, logs and engine/Silo data are not cached.
 
 On a Linux machine with Docker, the same checks run with `mise run ci`. This compiles the extension,
 runs rustfmt and Clippy, renders YARD and requires 100% documentation coverage, then runs the full

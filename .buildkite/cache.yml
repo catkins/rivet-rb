@@ -10,6 +10,26 @@ caches:
     target_paths:
       - vendor/bundle
 
+  - name: rust_build
+    cache_key:
+      - "rust-build-v1"
+      - agent: os
+      - agent: arch
+      - checksum:
+          - .mise.toml
+          - .ruby-version
+          - Gemfile.lock
+          - Cargo.toml
+          - Cargo.lock
+          - ext/rivet/Cargo.toml
+          - ext/rivet/extconf.rb
+          - .buildkite/ci.sh
+        fallback_limit: true
+      - checksum: "ext/rivet/src/**/*.rs"
+    target_paths:
+      - /mise/rivet-rb-cargo/registry
+      - /mise/rivet-rb-target
+
   - name: npm
     cache_key:
       - "npm-downloads-v1"

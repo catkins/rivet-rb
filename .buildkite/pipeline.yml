@@ -3,7 +3,6 @@ agents:
 
 cache:
   - "/mise"
-  - "target"
 
 env:
   MISE_GITHUB_ATTESTATIONS: "false"

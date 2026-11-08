@@ -28,8 +28,13 @@ trap cleanup EXIT
 if [[ "${BUILDKITE:-}" == "true" ]]; then
   echo "--- Restore dependency caches"
   export CARGO_HOME="/mise/rivet-rb-cargo"
+  export CARGO_TARGET_DIR="/mise/rivet-rb-target"
   export npm_config_cache="$PWD/tmp/ci-npm"
-  mkdir -p vendor/bundle "$CARGO_HOME/registry" "$npm_config_cache/_cacache"
+  mkdir -p \
+    vendor/bundle \
+    "$CARGO_HOME/registry" \
+    "$CARGO_TARGET_DIR" \
+    "$npm_config_cache/_cacache"
   buildkite-agent cache restore --download-timeout 2m
 fi
 
