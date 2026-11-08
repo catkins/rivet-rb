@@ -567,7 +567,7 @@ impl NativeContext {
         ruby.ary_from_iter(self.0.conns_vec().into_iter().map(NativeConnection))
     }
 
-    fn sql(&self, sql: String, params: magnus::Value) -> Result<magnus::Value, Error> {
+    fn sql(&self, sql: String, params: magnus::RArray) -> Result<magnus::Value, Error> {
         let params = crate::sql::params(params)?;
         let value = wait(self.0.sql().execute(sql, Some(params)))?;
         crate::sql::result(

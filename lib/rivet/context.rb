@@ -242,17 +242,12 @@ module Rivet
     # @raise [RangeError] an Integer bind is outside signed 64-bit range
     # @raise [Error] native execution fails or a bind type is unsupported
     def execute(statement, *params)
-      params = params.map do |value|
+      params.each do |value|
         if value.is_a?(Integer) && !value.between?(-9_223_372_036_854_775_808, 9_223_372_036_854_775_807)
           raise RangeError, "SQL integers must fit in signed 64 bits"
         end
-        value.is_a?(String) && value.encoding == Encoding::BINARY ? {"blob" => value.bytes} : value
       end
-      result = @native.sql(statement, params)
-      result.fetch("rows").each do |row|
-        row.map! { |value| value.is_a?(Hash) ? value.fetch("blob").pack("C*") : value }
-      end
-      result
+      @native.sql(statement, params)
     end
 
     # Query rows keyed by column name; duplicate names overwrite earlier ones.

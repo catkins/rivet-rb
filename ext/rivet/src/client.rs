@@ -94,11 +94,9 @@ impl NativeHandle {
         args: magnus::Value,
         timeout_ms: u64,
     ) -> Result<magnus::Value, Error> {
-        let args = from_ruby(args)?;
-        let args = args
-            .as_array()
-            .ok_or_else(|| error("action arguments must be an array"))?
-            .clone();
+        let Value::Array(args) = from_ruby(args)? else {
+            return Err(error("action arguments must be an array"));
+        };
         to_ruby(&deadline(timeout_ms, self.0.action(&name, args))?)
     }
     fn resolve(&self, timeout_ms: u64) -> Result<String, Error> {
@@ -186,11 +184,9 @@ impl NativeClientConnection {
         args: magnus::Value,
         timeout_ms: u64,
     ) -> Result<magnus::Value, Error> {
-        let args = from_ruby(args)?;
-        let args = args
-            .as_array()
-            .ok_or_else(|| error("action arguments must be an array"))?
-            .clone();
+        let Value::Array(args) = from_ruby(args)? else {
+            return Err(error("action arguments must be an array"));
+        };
         to_ruby(&deadline(timeout_ms, self.0.action(&name, args))?)
     }
     fn subscribe(&self, name: String) -> NativeSubscription {

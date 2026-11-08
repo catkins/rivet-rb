@@ -1,29 +1,30 @@
 use std::time::Duration;
 
-use magnus::{Error, Ruby, method, prelude::*};
+use magnus::{Error, RArray, RString, Ruby, encoding::EncodingCapable, method, prelude::*};
 use rivetkit::{BindParam, ColumnValue};
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use crate::runtime::{error, from_ruby, to_ruby, wait};
+use crate::runtime::{error, from_ruby, wait};
 
-pub fn params(value: magnus::Value) -> Result<Vec<BindParam>, Error> {
-    from_ruby(value)?
-        .as_array()
-        .ok_or_else(|| error("SQL parameters must be an array"))?
-        .iter()
-        .map(|v| {
-            Ok(match v {
+pub fn params(values: RArray) -> Result<Vec<BindParam>, Error> {
+    let ruby = Ruby::get().expect("Ruby thread with GVL");
+    (0..values.len())
+        .map(|index| {
+            let value = values.entry(index as isize)?;
+            if let Some(string) = RString::from_value(value)
+                && string.enc_get() == ruby.ascii8bit_encindex()
+            {
+                return Ok(BindParam::Blob(unsafe { string.as_slice().to_vec() }));
+            }
+            Ok(match from_ruby(value)? {
                 Value::Null => BindParam::Null,
-                Value::Bool(v) => BindParam::Integer(i64::from(*v)),
+                Value::Bool(v) => BindParam::Integer(i64::from(v)),
                 Value::Number(v) if v.is_i64() => BindParam::Integer(v.as_i64().unwrap()),
                 Value::Number(v) if v.is_u64() => {
                     return Err(error("SQL integers must fit in signed 64 bits"));
                 }
                 Value::Number(v) => BindParam::Float(v.as_f64().unwrap()),
-                Value::String(v) => BindParam::Text(v.clone()),
-                Value::Object(v) if v.len() == 1 && v.contains_key("blob") => {
-                    BindParam::Blob(serde_json::from_value(v["blob"].clone()).map_err(error)?)
-                }
+                Value::String(v) => BindParam::Text(v),
                 _ => return Err(error("unsupported SQL parameter")),
             })
         })
@@ -36,23 +37,27 @@ pub fn result(
     changes: i64,
     last_insert_row_id: Option<i64>,
 ) -> Result<magnus::Value, Error> {
-    let rows: Vec<Vec<Value>> = rows
-        .into_iter()
-        .map(|row| {
-            row.into_iter()
-                .map(|v| match v {
-                    ColumnValue::Null => Value::Null,
-                    ColumnValue::Integer(v) => json!(v),
-                    ColumnValue::Float(v) => json!(v),
-                    ColumnValue::Text(v) => json!(v),
-                    ColumnValue::Blob(v) => json!({"blob": v}),
-                })
-                .collect()
-        })
-        .collect();
-    to_ruby(
-        &json!({"columns": columns, "rows": rows, "changes": changes, "last_insert_row_id": last_insert_row_id}),
-    )
+    let ruby = Ruby::get().expect("Ruby thread with GVL");
+    let result = ruby.hash_new();
+    let ruby_rows = ruby.ary_new_capa(rows.len());
+    for row in rows {
+        let ruby_row = ruby.ary_new_capa(row.len());
+        for value in row {
+            ruby_row.push(match value {
+                ColumnValue::Integer(v) => ruby.into_value(v),
+                ColumnValue::Float(v) if v.is_finite() => ruby.into_value(v),
+                ColumnValue::Null | ColumnValue::Float(_) => ruby.qnil().as_value(),
+                ColumnValue::Text(v) => ruby.str_new(&v).as_value(),
+                ColumnValue::Blob(v) => ruby.str_from_slice(&v).as_value(),
+            })?;
+        }
+        ruby_rows.push(ruby_row)?;
+    }
+    result.aset("columns", columns)?;
+    result.aset("rows", ruby_rows)?;
+    result.aset("changes", changes)?;
+    result.aset("last_insert_row_id", last_insert_row_id)?;
+    Ok(result.as_value())
 }
 
 #[magnus::wrap(class = "Rivet::NativeTransaction", free_immediately, size)]
@@ -65,7 +70,7 @@ impl NativeTransaction {
         )))?))
     }
 
-    fn sql(&self, statement: String, params_value: magnus::Value) -> Result<magnus::Value, Error> {
+    fn sql(&self, statement: String, params_value: RArray) -> Result<magnus::Value, Error> {
         let value = wait(self.0.execute(statement, Some(params(params_value)?)))?;
         result(
             value.columns,
