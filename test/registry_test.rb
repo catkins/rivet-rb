@@ -48,10 +48,14 @@ class RegistryTest < Minitest::Test
     actor = client.get_or_create(:probe, [SecureRandom.hex(6)])
     assert_equal "ready", actor.echo("ready")
     assert_equal ["explicit"], actor.call(:to_ary)
-    assert_raises(Rivet::Error) { actor.oversized }
+    assert_output(nil, /RangeError: JSON integers must fit in signed or unsigned 64 bits/) do
+      assert_raises(Rivet::Error) { actor.oversized }
+    end
     assert_equal "still alive", actor.echo("still alive")
     failed = client.get_or_create(:broken, [SecureRandom.hex(6)])
-    3.times { assert_raises(Rivet::Error) { failed.starts } }
+    assert_output(nil, /RuntimeError: first activation fails/) do
+      3.times { assert_raises(Rivet::Error) { failed.starts } }
+    end
 
     blocked = Thread.new do
       actor.call(:block)
