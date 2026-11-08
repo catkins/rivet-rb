@@ -3,7 +3,11 @@ use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::OnceLock;
 
-use magnus::{Error, ExceptionClass, RModule, Ruby, prelude::*};
+use magnus::{
+    Error, ExceptionClass, Float, Integer, RArray, RHash, RModule, RString, Ruby, Symbol,
+    prelude::*,
+};
+use serde_json::Value;
 use tokio::runtime::Runtime;
 
 pub fn runtime() -> &'static Runtime {
@@ -79,8 +83,92 @@ pub fn deadline<T>(
     }
 }
 
-pub fn parse(json: &str) -> Result<serde_json::Value, Error> {
-    serde_json::from_str(json).map_err(error)
+pub fn from_ruby(value: magnus::Value) -> Result<Value, Error> {
+    fn convert(ruby: &Ruby, value: magnus::Value, depth: usize) -> Result<Value, Error> {
+        if depth > 100 {
+            return Err(Error::new(
+                ruby.exception_arg_error(),
+                "value nesting exceeds 100 levels (or contains a cycle)",
+            ));
+        }
+        if value.is_nil() {
+            Ok(Value::Null)
+        } else if magnus::value::Qtrue::from_value(value).is_some() {
+            Ok(Value::Bool(true))
+        } else if magnus::value::Qfalse::from_value(value).is_some() {
+            Ok(Value::Bool(false))
+        } else if let Some(integer) = Integer::from_value(value) {
+            if let Ok(number) = integer.to_i64() {
+                Ok(Value::from(number))
+            } else if let Ok(number) = integer.to_u64() {
+                Ok(Value::from(number))
+            } else {
+                Err(Error::new(
+                    ruby.exception_range_error(),
+                    "JSON integers must fit in signed or unsigned 64 bits; use a decimal string",
+                ))
+            }
+        } else if let Some(float) = Float::from_value(value) {
+            serde_json::Number::from_f64(float.to_f64())
+                .map(Value::Number)
+                .ok_or_else(|| Error::new(ruby.exception_arg_error(), "floats must be finite"))
+        } else if let Some(string) = RString::from_value(value) {
+            Ok(Value::String(string.to_string()?))
+        } else if let Some(symbol) = Symbol::from_value(value) {
+            Ok(Value::String(symbol.name()?.into_owned()))
+        } else if let Some(array) = RArray::from_value(value) {
+            (0..array.len())
+                .map(|index| convert(ruby, array.entry(index as isize)?, depth + 1))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Array)
+        } else if let Some(hash) = RHash::from_value(value) {
+            let mut object = serde_json::Map::new();
+            hash.foreach(|key: magnus::Value, child: magnus::Value| {
+                let key: RString = key.funcall("to_s", ())?;
+                object.insert(key.to_string()?, convert(ruby, child, depth + 1)?);
+                Ok(magnus::r_hash::ForEach::Continue)
+            })?;
+            Ok(Value::Object(object))
+        } else {
+            Err(Error::new(
+                ruby.exception_type_error(),
+                "expected nil, boolean, integer, float, string, symbol, array or hash; convert application objects explicitly",
+            ))
+        }
+    }
+    convert(&Ruby::get().expect("Ruby thread with GVL"), value, 0)
+}
+
+pub fn to_ruby(value: &Value) -> Result<magnus::Value, Error> {
+    let ruby = Ruby::get().expect("Ruby thread with GVL");
+    Ok(match value {
+        Value::Null => ruby.qnil().as_value(),
+        Value::Bool(value) => ruby.into_value(*value),
+        Value::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                ruby.into_value(value)
+            } else if let Some(value) = value.as_u64() {
+                ruby.into_value(value)
+            } else {
+                ruby.into_value(value.as_f64().unwrap())
+            }
+        }
+        Value::String(value) => ruby.str_new(value).as_value(),
+        Value::Array(values) => {
+            let array = ruby.ary_new_capa(values.len());
+            for value in values {
+                array.push(to_ruby(value)?)?;
+            }
+            array.as_value()
+        }
+        Value::Object(values) => {
+            let hash = ruby.hash_new();
+            for (key, value) in values {
+                hash.aset(ruby.str_new(key), to_ruby(value)?)?;
+            }
+            hash.as_value()
+        }
+    })
 }
 
 pub fn encode(value: &serde_json::Value) -> anyhow::Result<Vec<u8>> {

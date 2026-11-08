@@ -2,9 +2,12 @@ require "json"
 
 # MRI bindings for RivetKit actors and clients (Ruby 4+).
 #
-# JSON values cross the bridge with string Hash keys. Integers must fit in
-# -2**63..2**64-1; use decimal strings for larger values. Native failures raise
-# {Error}, operation deadlines raise {TimeoutError}, and Ruby conversion errors
+# Values cross the native bridge directly: nil, booleans, integers, finite
+# floats, UTF-8-compatible strings, symbols (as strings), arrays and hashes
+# (with stringified keys). Integers must fit in -2**63..2**64-1; use decimal
+# strings for larger values. Unsupported objects raise TypeError; to_json is
+# not called. Native failures raise {Error}, operation deadlines raise
+# {TimeoutError}, and Ruby conversion errors
 # retain their normal classes. A timeout does not prove a remote action did not
 # run; actions are not automatically retried.
 #
@@ -17,27 +20,6 @@ module Rivet
   class Error < StandardError; end
   # A binding deadline expired; remote work or Ruby callbacks may still run.
   class TimeoutError < Error; end
-
-  # Serialize and validate JSON integers, including custom to_json output.
-  # @api private
-  # @param value [Object] JSON-serializable value
-  # @return [String] validated JSON
-  # @raise [RangeError] an integer exceeds the bridge's exact range
-  def self.dump(value)
-    json = JSON.generate(value)
-    pending = [JSON.parse(json)]
-    until pending.empty?
-      case value = pending.pop
-      when Integer
-        unless value.between?(-9_223_372_036_854_775_808, 18_446_744_073_709_551_615)
-          raise RangeError, "JSON integers must fit in signed or unsigned 64 bits; use a decimal string"
-        end
-      when Array then pending.concat(value)
-      when Hash then pending.concat(value.values)
-      end
-    end
-    json
-  end
 
   # Convert a positive finite seconds deadline to rounded-up milliseconds.
   # @api private

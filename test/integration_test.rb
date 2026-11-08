@@ -22,6 +22,9 @@ class IntegrationTest < Minitest::Test
     value = {"text" => "日本語 🦀", "nested" => [nil, true, false, 3.25, -7,
       -9_223_372_036_854_775_808, 9_223_372_036_854_775_807, 18_446_744_073_709_551_615], "empty" => {}}
     assert_equal [value, [1, 2], nil], @actor.echo(value, [1, 2], nil)
+    assert_equal [{"symbol" => "ready", "17" => "café\u0000tail"}, 1.0, []],
+      @actor.echo({symbol: :ready, 17 => "café\u0000tail".encode(Encoding::ISO_8859_1)}, 1.0, [])
+    assert_instance_of Float, @actor.echo(1.0).first
     assert_equal [], @actor.echo
     assert_raises(Rivet::Error) { @actor.call(:initialize) }
     assert_raises(Rivet::Error) { @actor.fail }

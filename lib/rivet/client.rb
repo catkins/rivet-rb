@@ -46,7 +46,7 @@ module Rivet
   # Factory for HTTP actor handles and WebSocket connections.
   # Clients and handles support ordinary Ruby threads in the main Ractor only.
   # Native deadlines cover discovery, requests and response bodies, not remote
-  # rollback. See {Rivet} for serialization and cancellation restrictions.
+  # rollback. See {Rivet} for value conversion and cancellation restrictions.
   class Client
     # Default total native-operation deadline, in seconds.
     # @return [Numeric]
@@ -65,7 +65,7 @@ module Rivet
       token: ENV["RIVET_TOKEN"], namespace: ENV.fetch("RIVET_NAMESPACE", "default"), pool: nil, timeout: 30)
       Rivet.timeout_ms(timeout)
       @timeout = timeout
-      @native = NativeClient.new(endpoint, Rivet.dump(token: token, namespace: namespace, pool: pool))
+      @native = NativeClient.new(endpoint, {token: token, namespace: namespace, pool: pool})
     end
 
     # @!method get_or_create(name, key = [], timeout: @timeout, **options)
@@ -111,7 +111,7 @@ module Rivet
       define_method(mode) do |name, key = [], timeout: @timeout, **options|
         raise ArgumentError, "actor key must be an array of strings" unless key.is_a?(Array) && key.all? { |part| part.is_a?(String) }
         options[:timeout_ms] = Rivet.timeout_ms(timeout)
-        ActorHandle.new(self, @native.handle(mode.to_s, name.to_s, key, Rivet.dump(options)))
+        ActorHandle.new(self, @native.handle(mode.to_s, name.to_s, key, options))
       end
     end
 
@@ -123,7 +123,7 @@ module Rivet
     # @return [ActorHandle]
     # @raise [Error] native handle construction fails
     def get_for_id(name, id, **options)
-      ActorHandle.new(self, @native.handle("get_for_id", name.to_s, [String(id)], Rivet.dump(options)))
+      ActorHandle.new(self, @native.handle("get_for_id", name.to_s, [String(id)], options))
     end
   end
 
@@ -155,13 +155,14 @@ module Rivet
     # @param name [String, Symbol] action name
     # @param args [Array<Object>] positional JSON-compatible arguments
     # @param timeout [Numeric] positive finite seconds; defaults to client timeout
-    # @return [Object] decoded JSON result
+    # @return [Object] action result converted directly to Ruby values
     # @raise [ArgumentError] invalid timeout
-    # @raise [RangeError] a serialized integer is outside the JSON bridge range
+    # @raise [RangeError] an integer is outside the native bridge range
+    # @raise [TypeError] an argument contains an unsupported object
     # @raise [TimeoutError] deadline expires; the action may have run
     # @raise [Error] discovery or action fails
     def call(name, *args, timeout: @client.timeout)
-      JSON.parse(@native.action(name.to_s, Rivet.dump(args), Rivet.timeout_ms(timeout)))
+      @native.action(name.to_s, args, Rivet.timeout_ms(timeout))
     end
 
     # Implement the convenience dispatch described on {Actions}.
@@ -240,7 +241,7 @@ module Rivet
     # @raise [TimeoutError] deadline expires; message may have been sent
     # @raise [Error] native send fails
     def send_message(name, body, timeout: @client.timeout)
-      @native.send_message(name.to_s, Rivet.dump(body), Rivet.timeout_ms(timeout))
+      @native.send_message(name.to_s, body, Rivet.timeout_ms(timeout))
     end
 
     # Send to a declared queue handler and wait for its result.
@@ -253,7 +254,7 @@ module Rivet
     # @raise [TimeoutError] deadline expires; handler may have run
     # @raise [Error] native send/handler fails
     def send_and_wait(name, body, timeout: @client.timeout)
-      JSON.parse(@native.send_and_wait(name.to_s, Rivet.dump(body), Rivet.timeout_ms(timeout)))
+      @native.send_and_wait(name.to_s, body, Rivet.timeout_ms(timeout))
     end
 
     # Request the actor's raw HTTP handler; buffers both bodies in memory.
@@ -267,11 +268,11 @@ module Rivet
     # @raise [TimeoutError] deadline expires, including while reading response body
     # @raise [Error] native request fails
     def fetch(path = "/", method: "GET", headers: {}, body: nil, timeout: @client.timeout)
-      result = JSON.parse(@native.fetch(
+      result = @native.fetch(
         path,
-        Rivet.dump(method: method, headers: headers, body: body&.bytes),
+        {method: method, headers: headers, body: body&.bytes},
         Rivet.timeout_ms(timeout)
-      ))
+      )
       HTTPResponse.new(
         status: result.fetch("status"),
         headers: result.fetch("headers"),
@@ -371,7 +372,7 @@ module Rivet
     # @raise [ArgumentError] negative timeout
     def poll(timeout: 1)
       raise ArgumentError, "timeout must be nonnegative" if timeout < 0
-      @native.poll((timeout * 1000).to_i)&.then { |args| JSON.parse(args) }
+      @native.poll((timeout * 1000).to_i)
     end
 
     # Unsubscribe and join the listener, unless called by that listener itself.

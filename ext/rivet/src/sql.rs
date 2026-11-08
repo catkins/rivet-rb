@@ -4,10 +4,10 @@ use magnus::{Error, Ruby, method, prelude::*};
 use rivetkit::{BindParam, ColumnValue};
 use serde_json::{Value, json};
 
-use crate::runtime::{error, parse, wait};
+use crate::runtime::{error, from_ruby, to_ruby, wait};
 
-pub fn params(json: &str) -> Result<Vec<BindParam>, Error> {
-    parse(json)?
+pub fn params(value: magnus::Value) -> Result<Vec<BindParam>, Error> {
+    from_ruby(value)?
         .as_array()
         .ok_or_else(|| error("SQL parameters must be an array"))?
         .iter()
@@ -35,7 +35,7 @@ pub fn result(
     rows: Vec<Vec<ColumnValue>>,
     changes: i64,
     last_insert_row_id: Option<i64>,
-) -> String {
+) -> Result<magnus::Value, Error> {
     let rows: Vec<Vec<Value>> = rows
         .into_iter()
         .map(|row| {
@@ -50,7 +50,9 @@ pub fn result(
                 .collect()
         })
         .collect();
-    json!({"columns": columns, "rows": rows, "changes": changes, "last_insert_row_id": last_insert_row_id}).to_string()
+    to_ruby(
+        &json!({"columns": columns, "rows": rows, "changes": changes, "last_insert_row_id": last_insert_row_id}),
+    )
 }
 
 #[magnus::wrap(class = "Rivet::NativeTransaction", free_immediately, size)]
@@ -63,14 +65,14 @@ impl NativeTransaction {
         )))?))
     }
 
-    fn sql(&self, statement: String, json: String) -> Result<String, Error> {
-        let value = wait(self.0.execute(statement, Some(params(&json)?)))?;
-        Ok(result(
+    fn sql(&self, statement: String, params_value: magnus::Value) -> Result<magnus::Value, Error> {
+        let value = wait(self.0.execute(statement, Some(params(params_value)?)))?;
+        result(
             value.columns,
             value.rows,
             value.changes,
             value.last_insert_row_id,
-        ))
+        )
     }
     fn commit(&self) -> Result<(), Error> {
         wait(self.0.commit())

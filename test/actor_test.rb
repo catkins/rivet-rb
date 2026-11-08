@@ -25,6 +25,20 @@ class ActorTest < Minitest::Test
     end
   end
 
+  def test_native_conversion_rejects_invalid_values_before_network_io
+    handle = Rivet::Client.new.get(:counter)
+    custom = Object.new
+    def custom.to_json(*) = raise("must not call to_json")
+    assert_raises(TypeError) { handle.echo({nested: [custom]}) }
+    [Float::NAN, Float::INFINITY, -Float::INFINITY].each do |value|
+      assert_raises(ArgumentError) { handle.echo(value) }
+    end
+    cycle = []
+    cycle << cycle
+    assert_raises(ArgumentError) { handle.echo(cycle) }
+    assert_raises(EncodingError) { handle.echo(String.new("\xff").force_encoding(Encoding::UTF_8)) }
+  end
+
   def test_ruby_coercions_do_not_call_remote_actions
     handle = Rivet::Client.new.get(:counter)
     assert_equal [handle], Array(handle)

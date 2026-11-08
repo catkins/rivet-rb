@@ -154,11 +154,22 @@ Only explicitly declared actions are remotely callable. Blocks run with the acto
 `self`, so instance variables are ephemeral per activation. `state` receives `(ctx, input)`;
 `input` is `nil` when absent. Constant defaults also work: `state({"count" => 0})`.
 
-State, input, action arguments/results and event arguments use JSON-compatible values. Hash keys
-come back as strings. Ruby serialization rejects integers outside the native bridge's exact range
-(−2⁶³ to 2⁶⁴−1) with `RangeError`, including nested values and custom `to_json` output. Pass larger
-values as decimal strings. TypeScript `number` has a narrower exact-integer range (±(2⁵³−1)); the
-binding cannot recover precision already lost by another client. SQL binds use signed 64 bits only.
+State, input, action arguments/results and event arguments use JSON-compatible values. The native
+bridge converts Ruby values directly to and from Rust values, without encoding or parsing JSON
+strings. Supported values are nil, booleans, integers, finite floats, UTF-8-compatible strings,
+symbols (converted to strings), arrays and hashes. Hash keys come back as strings. Unsupported
+objects raise `TypeError`; `to_json` is not called. Convert dates, times and decimals explicitly.
+Non-finite floats and cyclic or excessively nested values raise `ArgumentError`.
+Integers outside the native bridge's exact range (−2⁶³ to 2⁶⁴−1) raise `RangeError`, including nested
+values. Pass larger values as decimal strings. TypeScript `number` has a narrower exact-integer
+range (±(2⁵³−1)); the binding cannot recover precision already lost by another client. SQL binds use
+signed 64 bits only.
+
+This changes only the in-process Ruby–Rust boundary. The Rust SDK still uses HTTP for ordinary
+actions and WebSockets for connected actions/events, with versioned BARE binary envelopes and
+CBOR payloads by default. The runner uses Rivet's separate binary WebSocket tunnel to the engine.
+Existing state and KV storage formats are unchanged; KV values remain stored as JSON bytes.
+
 `ctx.state` is a **deeply frozen snapshot**: use `ctx.update_state { |state| ... }`
 or `ctx.state = value` to persist changes. `update_state` returns the block result and writes the
 mutated value only if the block succeeds. Keep these blocks short and do not perform I/O in them.
@@ -423,7 +434,7 @@ Ruby result conversion and exception creation happen after it is reacquired. Tok
 do not call Ruby: actor callbacks are sent through channels and executed by Ruby-created threads.
 
 This enables overlapping I/O, **not parallel CPU-heavy Ruby execution within one Ractor**. The
-callback worker limits are admission limits, not a number of Ruby CPU cores. Ruby-side JSON conversion
+callback worker limits are admission limits, not a number of Ruby CPU cores. Ruby–Rust value conversion
 and other Ruby code still use the GVL. There is no Fiber scheduler integration. Releasing the GVL is
 also not cancellation: the native wrapper supplies no unblock function, so do not rely on Ruby
 `Timeout` or `Thread#kill` to cancel native I/O. Use the binding's operation deadlines and cooperative
@@ -467,7 +478,7 @@ clients and runners **after** forking; do not inherit an initialized Tokio runti
   WebSockets, hibernation callbacks, serverless HTTP hosting, schema generation, or Fiber scheduler
   integration yet. Named interval schedules can be cancelled with `ctx.cancel_every`.
 - Native operation failures raise `Rivet::Error`; binding deadlines raise its `Rivet::TimeoutError` subclass.
-  Ruby argument/serialization failures retain their normal exception classes.
+  Ruby argument/conversion failures retain their normal exception classes.
   Arbitrary Ruby exceptions are logged locally and go through Rivet's normal error boundary; this is
   not yet a complete structured/public application-error API.
 - Native APIs are pinned. Upgrades need protocol and lifecycle tests, not just a version bump.

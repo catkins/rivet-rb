@@ -7,7 +7,7 @@ module Rivet
   # Actions, queue handlers and HTTP handlers share a per-instance mutex. Hooks
   # can overlap them; synchronize shared instance variables yourself. Avoid
   # synchronous self-calls and cyclic actor calls. State and callback results use
-  # JSON; see {Rivet} for integer limits, cancellation and Ractor restrictions.
+  # JSON-compatible values; see {Rivet} for conversion, cancellation and Ractor restrictions.
   class Actor
     # Supported lifecycle and connection registration names.
     # @api private
@@ -46,7 +46,7 @@ module Rivet
       def initializer = @initializer
 
       # Set the initial managed state for newly created actors, not each wake.
-      # A block takes precedence over value; constant values are JSON-copied.
+      # A block takes precedence over value; native conversion copies constant values.
       # Managed state is retained for compatibility; prefer SQLite for new data.
       # @param value [Object] JSON-compatible default (defaults to {})
       # @yield [ctx, input] compute the initial JSON-compatible state
@@ -55,7 +55,7 @@ module Rivet
       # @yieldreturn [Object] initial state
       # @return [Proc] registered initializer
       def state(value = {}, &block)
-        @initializer = block || ->(_ctx, _input) { JSON.parse(Rivet.dump(value)) }
+        @initializer = block || ->(_ctx, _input) { value }
       end
 
       # Register or replace a remotely callable action.
@@ -250,7 +250,8 @@ module Rivet
         when "on_before_connect", "create_conn_state" then [ctx, data]
         else [ctx]
         end
-        instance_exec(*args, &handler)
+        result = instance_exec(*args, &handler)
+        kind == "create_conn_state" ? result : nil
       end
     end
   end

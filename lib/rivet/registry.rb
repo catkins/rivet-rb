@@ -57,7 +57,7 @@ module Rivet
       definitions = @actors.transform_values do |actor|
         actor.options.merge(actions: actor.actions.keys, queues: actor.queues.keys, run: actor.hooks.key?("run"))
       end
-      @native = NativeRunner.start(Rivet.dump(definitions), Rivet.dump(options))
+      @native = NativeRunner.start(definitions, options)
       begin
         loop do
           if @shutdown_deadline && Process.clock_gettime(Process::CLOCK_MONOTONIC) >= @shutdown_deadline
@@ -75,7 +75,7 @@ module Rivet
               next
             end
             native_ctx = callback.context
-            metadata = JSON.parse(native_ctx.metadata)
+            metadata = native_ctx.metadata
             actor, = @instances[metadata.fetch("activation")] ||= [@actors.fetch(metadata.fetch("name")).new, native_ctx]
             thread = Thread.new(callback, native_ctx, actor) do |call, ctx, instance|
               dispatch(call, ctx, instance)
@@ -122,11 +122,11 @@ module Rivet
     # @return [nil]
     def dispatch(callback, native_ctx, actor)
       ctx = Context.new(native_ctx, actor, callback)
-      result = actor.dispatch(callback.kind, ctx, JSON.parse(callback.data))
-      callback.reply(Rivet.dump(result), nil)
+      result = actor.dispatch(callback.kind, ctx, callback.data)
+      callback.reply(result, nil)
     rescue StandardError => error
       warn "Rivet #{callback.kind}: #{error.class}: #{error.message}"
-      callback.reply("null", "#{error.class}: #{error.message}")
+      callback.reply(nil, "#{error.class}: #{error.message}")
     ensure
       callback.cancel
     end

@@ -3,7 +3,7 @@ module Rivet
   # Hooks may overlap actions. Managed-state writes use a per-actor mutex; other
   # application data needs its own synchronization. Native waits release the GVL
   # but cancellation is cooperative: check {#aborted?} during long work.
-  # Native failures raise {Error}; JSON conversion retains Ruby errors.
+  # Native failures raise {Error}; value conversion retains Ruby errors.
   class Context
     # Connection associated with this callback, if any.
     # @return [ConnectionContext, nil]
@@ -19,7 +19,7 @@ module Rivet
       @actor = actor
       @callback = callback
       @connection = callback.connection&.then { |conn| ConnectionContext.new(conn) }
-      @metadata = JSON.parse(native.metadata)
+      @metadata = native.metadata
     end
 
     # @return [String] stable actor ID
@@ -60,27 +60,26 @@ module Rivet
     # Prefer SQLite for new durable data; managed state is a compatibility API.
     # @return [Object] frozen snapshot; Hash keys are strings
     def state
-      deep_freeze(JSON.parse(@native.state))
+      deep_freeze(@native.state)
     end
 
     # Replace managed state under the actor's state mutex and request a save.
     # Saving is scheduled, not fsynced on action return. Graceful sleep/shutdown
     # flushes state; abrupt process death may lose recent writes.
-    # Ruby assignment syntax returns the original value, not this method's result.
     # @param value [Object] JSON-compatible replacement
-    # @return [String] serialized replacement when invoked as a method
+    # @return [Object] original replacement value
     # @raise [Error] callback has expired or native write fails
     # @raise [RangeError] JSON integer exceeds the bridge range
     def state=(value)
       @actor.state_lock.synchronize do
         check_active!
-        @native.state = Rivet.dump(value)
+        @native.state = value
       end
     end
 
     # Atomically read, mutate and replace managed state within this activation.
     # Writes only on normal block completion while the callback is still active;
-    # exceptions/nonlocal exits leave the old state. Serialization failure also
+    # exceptions/nonlocal exits leave the old state. Conversion failure also
     # prevents the write. Keep the block short and I/O-free; the mutex is not
     # reentrant, so do not call state= or update_state inside it.
     # Persistence is scheduled as with {#state=}.
@@ -94,10 +93,10 @@ module Rivet
     def update_state
       check_active!
       @actor.state_lock.synchronize do
-        value = JSON.parse(@native.state)
+        value = @native.state
         result = yield value
         check_active!
-        @native.state = Rivet.dump(value)
+        @native.state = value
         result
       end
     end
@@ -109,7 +108,7 @@ module Rivet
     # @raise [Error] callback has expired or native broadcast fails
     def broadcast(name, *args)
       check_active!
-      @native.broadcast(name.to_s, Rivet.dump(args))
+      @native.broadcast(name.to_s, args)
     end
 
     # @return [Array<ConnectionContext>] current server connections
@@ -139,7 +138,7 @@ module Rivet
     def after(seconds, action, *args)
       check_active!
       raise ArgumentError, "delay must be nonnegative" if seconds < 0
-      @native.schedule((seconds * 1000).to_i, action.to_s, Rivet.dump(args))
+      @native.schedule((seconds * 1000).to_i, action.to_s, args)
     end
 
     # Create or update a durable named interval schedule. Reusing a name replaces
@@ -156,7 +155,7 @@ module Rivet
     def every(name, seconds, action, *args)
       check_active!
       raise ArgumentError, "interval must be finite and at least five seconds" unless seconds.finite? && seconds >= 5
-      @native.every(name.to_s, (seconds * 1000).to_i, action.to_s, Rivet.dump(args))
+      @native.every(name.to_s, (seconds * 1000).to_i, action.to_s, args)
     end
 
     # Remove a named interval schedule and its history; does not cancel an
@@ -197,18 +196,17 @@ module Rivet
 
     # @return [String] connection ID
     def id = @native.id
-    # @return [Object] decoded JSON connection parameters
-    def params = JSON.parse(@native.params)
+    # @return [Object] connection parameters converted directly to Ruby values
+    def params = @native.params
     # @return [Object] mutable copy of JSON connection state
-    def state = JSON.parse(@native.state)
+    def state = @native.state
 
     # Replace connection state, without an atomic read/modify/write guarantee.
-    # Ruby assignment syntax returns the original value, not this method's result.
     # @param value [Object] JSON-compatible replacement
-    # @return [String] serialized replacement when invoked as a method
+    # @return [Object] original replacement value
     # @raise [RangeError] JSON integer exceeds the bridge range
     def state=(value)
-      @native.state = Rivet.dump(value)
+      @native.state = value
     end
 
     # Send an event to this connection only.
@@ -216,7 +214,7 @@ module Rivet
     # @param args [Array<Object>] positional JSON event arguments
     # @return [nil]
     def emit(name, *args)
-      @native.send_event(name.to_s, Rivet.dump(args))
+      @native.send_event(name.to_s, args)
     end
 
     # Disconnect this client, waiting for the native operation.
@@ -248,9 +246,9 @@ module Rivet
         if value.is_a?(Integer) && !value.between?(-9_223_372_036_854_775_808, 9_223_372_036_854_775_807)
           raise RangeError, "SQL integers must fit in signed 64 bits"
         end
-        value.is_a?(String) && value.encoding == Encoding::BINARY ? {blob: value.bytes} : value
+        value.is_a?(String) && value.encoding == Encoding::BINARY ? {"blob" => value.bytes} : value
       end
-      result = JSON.parse(@native.sql(statement, Rivet.dump(params)))
+      result = @native.sql(statement, params)
       result.fetch("rows").each do |row|
         row.map! { |value| value.is_a?(Hash) ? value.fetch("blob").pack("C*") : value }
       end
@@ -309,7 +307,7 @@ module Rivet
     # @param key [String, Symbol] key converted with to_s
     # @return [Object, nil] decoded value; nil also represents a missing key
     def [](key)
-      @native.kv_get(key.to_s)&.then { |value| JSON.parse(value) }
+      @native.kv_get(key.to_s)
     end
 
     # Store a JSON-compatible value.
@@ -318,7 +316,7 @@ module Rivet
     # @return [Object] original value
     # @raise [RangeError] JSON integer exceeds the bridge range
     def []=(key, value)
-      @native.kv_put(key.to_s, Rivet.dump(value))
+      @native.kv_put(key.to_s, value)
       value
     end
 
@@ -345,7 +343,7 @@ module Rivet
     # @return [Integer] message ID
     # @raise [RangeError] JSON integer exceeds the bridge range
     def send(name, body)
-      @native.queue_send(name.to_s, Rivet.dump(body))
+      @native.queue_send(name.to_s, body)
     end
 
     # Consume the next matching message using the native queue's semantics.
@@ -357,7 +355,7 @@ module Rivet
     # @raise [ArgumentError] negative timeout
     def next(*names, timeout: 0)
       raise ArgumentError, "timeout must be nonnegative" if timeout < 0
-      @native.queue_next(names.map(&:to_s), (timeout * 1000).to_i)&.then { |message| JSON.parse(message) }
+      @native.queue_next(names.map(&:to_s), (timeout * 1000).to_i)
     end
   end
 end

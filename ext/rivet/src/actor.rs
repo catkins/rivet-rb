@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,7 +13,7 @@ use serde_json::{Value, json};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use crate::runtime::{decode, encode, error, parse, runtime, wait, without_gvl};
+use crate::runtime::{decode, encode, error, from_ruby, runtime, to_ruby, wait, without_gvl};
 
 tokio::task_local! { static BRIDGE: Arc<Bridge>; }
 
@@ -68,7 +67,7 @@ impl Bridge {
                 ctx,
                 bridge: self.clone(),
                 kind: kind.to_owned(),
-                data: data.to_string(),
+                data,
                 conn,
                 reply: Mutex::new(Some(tx)),
             })
@@ -324,7 +323,7 @@ pub struct Callback {
     ctx: Ctx<RubyActor>,
     bridge: Arc<Bridge>,
     kind: String,
-    data: String,
+    data: Value,
     conn: Option<ConnCtx<RubyActor>>,
     reply: Mutex<Option<oneshot::Sender<Result<Value>>>>,
 }
@@ -350,8 +349,8 @@ impl Callback {
     fn kind(&self) -> String {
         self.kind.clone()
     }
-    fn data(&self) -> String {
-        self.data.clone()
+    fn data(&self) -> Result<magnus::Value, Error> {
+        to_ruby(&self.data)
     }
     fn context(&self) -> NativeContext {
         NativeContext(self.ctx.clone(), self.bridge.clone())
@@ -371,10 +370,10 @@ impl Callback {
                 .as_ref()
                 .is_some_and(|tx| !tx.is_closed())
     }
-    fn reply(&self, json: String, failure: Option<String>) -> Result<(), Error> {
+    fn reply(&self, value: magnus::Value, failure: Option<String>) -> Result<(), Error> {
         let result = match failure {
             Some(message) => Err(anyhow!(message)),
-            None => Ok(parse(&json)?),
+            None => Ok(from_ruby(value)?),
         };
         if let Some(tx) = self.reply.lock().unwrap().take() {
             let _ = tx.send(result);
@@ -398,10 +397,12 @@ impl Drop for NativeRunner {
 }
 
 impl NativeRunner {
-    fn start(definitions: String, options: String) -> Result<Self, Error> {
-        let definitions: HashMap<String, Value> =
-            serde_json::from_str(&definitions).map_err(error)?;
-        let options = parse(&options)?;
+    fn start(definitions: magnus::Value, options: magnus::Value) -> Result<Self, Error> {
+        let definitions = from_ruby(definitions)?;
+        let definitions = definitions
+            .as_object()
+            .ok_or_else(|| error("actor definitions must be a hash"))?;
+        let options = from_ruby(options)?;
         let (tx, rx) = mpsc::sync_channel(CALLBACK_CAPACITY);
         let (lifecycle_tx, lifecycle_rx) = mpsc::sync_channel(CALLBACK_CAPACITY);
         let mut registry = rivetkit_core::CoreRegistry::new();
@@ -518,7 +519,7 @@ impl NativeRunner {
 pub struct NativeContext(pub Ctx<RubyActor>, Arc<Bridge>);
 
 impl NativeContext {
-    fn metadata(&self) -> String {
+    fn metadata(&self) -> Result<magnus::Value, Error> {
         let key: Vec<Value> = self
             .0
             .key()
@@ -528,21 +529,25 @@ impl NativeContext {
                 rivetkit::ActorKeySegment::Number(v) => json!(v),
             })
             .collect();
-        json!({"id": self.0.actor_id(), "name": self.0.name(), "key": key, "region": self.0.region(), "activation": self.0.inner().instance_key().to_string()}).to_string()
+        to_ruby(
+            &json!({"id": self.0.actor_id(), "name": self.0.name(), "key": key, "region": self.0.region(), "activation": self.0.inner().instance_key().to_string()}),
+        )
     }
     fn finished(&self) -> bool {
         self.1.finished.load(Ordering::Acquire)
     }
-    fn state(&self) -> String {
-        self.1.state.lock().unwrap().to_string()
+    fn state(&self) -> Result<magnus::Value, Error> {
+        let state = self.1.state.lock().unwrap().clone();
+        to_ruby(&state)
     }
-    fn set_state(&self, json: String) -> Result<(), Error> {
-        *self.1.state.lock().unwrap() = parse(&json)?;
+    fn set_state(&self, value: magnus::Value) -> Result<(), Error> {
+        let value = from_ruby(value)?;
+        *self.1.state.lock().unwrap() = value;
         self.0.inner().request_save(Default::default());
         Ok(())
     }
-    fn broadcast(&self, name: String, json: String) -> Result<(), Error> {
-        self.0.broadcast(&name, &parse(&json)?).map_err(error)
+    fn broadcast(&self, name: String, value: magnus::Value) -> Result<(), Error> {
+        self.0.broadcast(&name, &from_ruby(value)?).map_err(error)
     }
     fn sleep(&self) -> Result<(), Error> {
         self.0.sleep().map_err(error)
@@ -562,38 +567,42 @@ impl NativeContext {
         ruby.ary_from_iter(self.0.conns_vec().into_iter().map(NativeConnection))
     }
 
-    fn sql(&self, sql: String, params: String) -> Result<String, Error> {
-        let params = crate::sql::params(&params)?;
+    fn sql(&self, sql: String, params: magnus::Value) -> Result<magnus::Value, Error> {
+        let params = crate::sql::params(params)?;
         let value = wait(self.0.sql().execute(sql, Some(params)))?;
-        Ok(crate::sql::result(
+        crate::sql::result(
             value.columns,
             value.rows,
             value.changes,
             value.last_insert_row_id,
-        ))
+        )
     }
 
     fn begin_sql(&self, timeout_ms: u64) -> Result<crate::sql::NativeTransaction, Error> {
         crate::sql::NativeTransaction::begin(self.0.sql(), timeout_ms)
     }
 
-    fn kv_get(&self, key: String) -> Result<Option<String>, Error> {
+    fn kv_get(&self, key: String) -> Result<Option<magnus::Value>, Error> {
         #[allow(deprecated)]
         let value = wait(self.0.kv().get(key.as_bytes()))?;
         value
-            .map(|bytes| String::from_utf8(bytes).map_err(error))
+            .map(|bytes| {
+                let value = serde_json::from_slice(&bytes).map_err(error)?;
+                to_ruby(&value)
+            })
             .transpose()
     }
-    fn kv_put(&self, key: String, value: String) -> Result<(), Error> {
+    fn kv_put(&self, key: String, value: magnus::Value) -> Result<(), Error> {
+        let value = serde_json::to_vec(&from_ruby(value)?).map_err(error)?;
         #[allow(deprecated)]
-        wait(self.0.kv().put(key.as_bytes(), value.as_bytes()))
+        wait(self.0.kv().put(key.as_bytes(), &value))
     }
     fn kv_delete(&self, key: String) -> Result<(), Error> {
         #[allow(deprecated)]
         wait(self.0.kv().delete(key.as_bytes()))
     }
-    fn schedule(&self, delay_ms: u64, name: String, args: String) -> Result<String, Error> {
-        let bytes = encode(&parse(&args)?).map_err(error)?;
+    fn schedule(&self, delay_ms: u64, name: String, args: magnus::Value) -> Result<String, Error> {
+        let bytes = encode(&from_ruby(args)?).map_err(error)?;
         wait(
             self.0
                 .schedule()
@@ -605,9 +614,9 @@ impl NativeContext {
         name: String,
         interval_ms: i64,
         action: String,
-        args: String,
+        args: magnus::Value,
     ) -> Result<(), Error> {
-        let bytes = encode(&parse(&args)?).map_err(error)?;
+        let bytes = encode(&from_ruby(args)?).map_err(error)?;
         wait(
             self.0
                 .inner()
@@ -617,18 +626,22 @@ impl NativeContext {
     fn cancel_every(&self, name: String) -> Result<bool, Error> {
         wait(self.0.inner().cron_delete(&name))
     }
-    fn queue_send(&self, name: String, body: String) -> Result<u64, Error> {
-        let body = encode(&parse(&body)?).map_err(error)?;
+    fn queue_send(&self, name: String, body: magnus::Value) -> Result<u64, Error> {
+        let body = encode(&from_ruby(body)?).map_err(error)?;
         Ok(wait(self.0.inner().queue().send(&name, &body))?.id)
     }
-    fn queue_next(&self, names: Vec<String>, timeout_ms: u64) -> Result<Option<String>, Error> {
+    fn queue_next(
+        &self,
+        names: Vec<String>,
+        timeout_ms: u64,
+    ) -> Result<Option<magnus::Value>, Error> {
         let opts = rivetkit_core::QueueNextOpts {
             names: Some(names),
             timeout: Some(Duration::from_millis(timeout_ms)),
             ..Default::default()
         };
         wait(self.0.inner().queue().next(opts))?.map(|message| {
-            Ok(json!({"id": message.id, "name": message.name, "body": decode(&message.body).map_err(error)?, "created_at": message.created_at}).to_string())
+            to_ruby(&json!({"id": message.id, "name": message.name, "body": decode(&message.body).map_err(error)?, "created_at": message.created_at}))
         }).transpose()
     }
 }
@@ -640,20 +653,20 @@ impl NativeConnection {
     fn id(&self) -> String {
         self.0.id().to_owned()
     }
-    fn params(&self) -> Result<String, Error> {
-        Ok(self.0.params().map_err(error)?.to_string())
+    fn params(&self) -> Result<magnus::Value, Error> {
+        to_ruby(&self.0.params().map_err(error)?)
     }
-    fn state(&self) -> Result<String, Error> {
-        Ok(decode(&self.0.inner().state()).map_err(error)?.to_string())
+    fn state(&self) -> Result<magnus::Value, Error> {
+        to_ruby(&decode(&self.0.inner().state()).map_err(error)?)
     }
-    fn set_state(&self, json: String) -> Result<(), Error> {
+    fn set_state(&self, value: magnus::Value) -> Result<(), Error> {
         self.0
             .inner()
-            .set_state(encode(&parse(&json)?).map_err(error)?);
+            .set_state(encode(&from_ruby(value)?).map_err(error)?);
         Ok(())
     }
-    fn send(&self, name: String, json: String) -> Result<(), Error> {
-        self.0.send(&name, &parse(&json)?).map_err(error)
+    fn send(&self, name: String, value: magnus::Value) -> Result<(), Error> {
+        self.0.send(&name, &from_ruby(value)?).map_err(error)
     }
     fn disconnect(&self) -> Result<(), Error> {
         wait(self.0.disconnect(None))

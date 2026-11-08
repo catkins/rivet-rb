@@ -7,14 +7,14 @@ use rivetkit::client::{
 };
 use serde_json::{Value, json};
 
-use crate::runtime::{deadline, error, parse, runtime, without_gvl};
+use crate::runtime::{deadline, error, from_ruby, runtime, to_ruby, without_gvl};
 
 #[magnus::wrap(class = "Rivet::NativeClient", free_immediately, size)]
 pub struct NativeClient(Client);
 
 impl NativeClient {
-    fn new(endpoint: String, options: String) -> Result<Self, Error> {
-        let options = parse(&options)?;
+    fn new(endpoint: String, options: magnus::Value) -> Result<Self, Error> {
+        let options = from_ruby(options)?;
         let mut config = ClientConfig::new(endpoint);
         if let Some(v) = options["token"].as_str() {
             config = config
@@ -36,9 +36,9 @@ impl NativeClient {
         mode: String,
         name: String,
         key: Vec<String>,
-        options: String,
+        options: magnus::Value,
     ) -> Result<NativeHandle, Error> {
-        let options = parse(&options)?;
+        let options = from_ruby(options)?;
         let params = options.get("params").cloned();
         let input = options.get("input").cloned();
         let pool_name = options["pool"].as_str().map(str::to_owned);
@@ -88,9 +88,18 @@ impl NativeClient {
 pub struct NativeHandle(rivetkit::client::handle::ActorHandle);
 
 impl NativeHandle {
-    fn action(&self, name: String, args: String, timeout_ms: u64) -> Result<String, Error> {
-        let args: Vec<Value> = serde_json::from_str(&args).map_err(error)?;
-        Ok(deadline(timeout_ms, self.0.action(&name, args))?.to_string())
+    fn action(
+        &self,
+        name: String,
+        args: magnus::Value,
+        timeout_ms: u64,
+    ) -> Result<magnus::Value, Error> {
+        let args = from_ruby(args)?;
+        let args = args
+            .as_array()
+            .ok_or_else(|| error("action arguments must be an array"))?
+            .clone();
+        to_ruby(&deadline(timeout_ms, self.0.action(&name, args))?)
     }
     fn resolve(&self, timeout_ms: u64) -> Result<String, Error> {
         deadline(timeout_ms, self.0.resolve())
@@ -100,23 +109,34 @@ impl NativeHandle {
         NativeClientConnection(self.0.connect())
     }
     #[allow(deprecated)]
-    fn send(&self, name: String, body: String, timeout_ms: u64) -> Result<(), Error> {
-        deadline(
-            timeout_ms,
-            self.0.send(&name, parse(&body)?, SendOpts::default()),
-        )
+    fn send(&self, name: String, body: magnus::Value, timeout_ms: u64) -> Result<(), Error> {
+        let body = from_ruby(body)?;
+        deadline(timeout_ms, self.0.send(&name, body, SendOpts::default()))
     }
     #[allow(deprecated)]
-    fn send_and_wait(&self, name: String, body: String, timeout_ms: u64) -> Result<String, Error> {
+    fn send_and_wait(
+        &self,
+        name: String,
+        body: magnus::Value,
+        timeout_ms: u64,
+    ) -> Result<magnus::Value, Error> {
+        let body = from_ruby(body)?;
         let opts = SendAndWaitOpts {
             timeout: Some(Duration::from_millis(timeout_ms)),
         };
-        let result = deadline(timeout_ms, self.0.send_and_wait(&name, parse(&body)?, opts))?;
-        Ok(json!({"status": format!("{:?}", result.status).to_lowercase(), "response": result.response}).to_string())
+        let result = deadline(timeout_ms, self.0.send_and_wait(&name, body, opts))?;
+        to_ruby(
+            &json!({"status": format!("{:?}", result.status).to_lowercase(), "response": result.response}),
+        )
     }
 
-    fn fetch(&self, path: String, options: String, timeout_ms: u64) -> Result<String, Error> {
-        let options = parse(&options)?;
+    fn fetch(
+        &self,
+        path: String,
+        options: magnus::Value,
+        timeout_ms: u64,
+    ) -> Result<magnus::Value, Error> {
+        let options = from_ruby(options)?;
         let method = options["method"]
             .as_str()
             .unwrap_or("GET")
@@ -133,7 +153,7 @@ impl NativeHandle {
         }
         let body: Option<Vec<u8>> =
             serde_json::from_value(options["body"].clone()).map_err(error)?;
-        deadline(timeout_ms, async {
+        let result = deadline(timeout_ms, async {
             let response = self
                 .0
                 .fetch(&path, method, header_map, body.map(Into::into))
@@ -150,8 +170,9 @@ impl NativeHandle {
                 })
                 .collect();
             let body = response.bytes().await?.to_vec();
-            Ok(json!({"status": status, "headers": headers, "body": body}).to_string())
-        })
+            Ok(json!({"status": status, "headers": headers, "body": body}))
+        })?;
+        to_ruby(&result)
     }
 }
 
@@ -159,15 +180,24 @@ impl NativeHandle {
 pub struct NativeClientConnection(rivetkit::client::connection::ActorConnection);
 
 impl NativeClientConnection {
-    fn action(&self, name: String, args: String, timeout_ms: u64) -> Result<String, Error> {
-        let args: Vec<Value> = serde_json::from_str(&args).map_err(error)?;
-        Ok(deadline(timeout_ms, self.0.action(&name, args))?.to_string())
+    fn action(
+        &self,
+        name: String,
+        args: magnus::Value,
+        timeout_ms: u64,
+    ) -> Result<magnus::Value, Error> {
+        let args = from_ruby(args)?;
+        let args = args
+            .as_array()
+            .ok_or_else(|| error("action arguments must be an array"))?
+            .clone();
+        to_ruby(&deadline(timeout_ms, self.0.action(&name, args))?)
     }
     fn subscribe(&self, name: String) -> NativeSubscription {
         let (tx, rx) = mpsc::channel();
         let handle = without_gvl(|| {
             runtime().block_on(self.0.on_event(&name, move |args| {
-                let _ = tx.send(json!(args).to_string());
+                let _ = tx.send(json!(args));
             }))
         });
         NativeSubscription {
@@ -189,18 +219,19 @@ impl NativeClientConnection {
 #[magnus::wrap(class = "Rivet::NativeSubscription", free_immediately, size)]
 pub struct NativeSubscription {
     handle: rivetkit::client::SubscriptionHandle,
-    rx: Mutex<mpsc::Receiver<String>>,
+    rx: Mutex<mpsc::Receiver<Value>>,
 }
 
 impl NativeSubscription {
-    fn poll(&self, timeout_ms: u64) -> Option<String> {
-        without_gvl(|| {
+    fn poll(&self, timeout_ms: u64) -> Result<Option<magnus::Value>, Error> {
+        let value = without_gvl(|| {
             self.rx
                 .lock()
                 .unwrap()
                 .recv_timeout(Duration::from_millis(timeout_ms))
                 .ok()
-        })
+        });
+        value.as_ref().map(to_ruby).transpose()
     }
     fn unsubscribe(&self) {
         without_gvl(|| runtime().block_on(self.handle.unsubscribe()));
