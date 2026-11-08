@@ -2,15 +2,57 @@ require_relative "test_helper"
 require "net/http"
 
 class RegistryTest < Minitest::Test
+  def test_subclasses_inherit_handlers_and_isolate_overrides
+    skip "Set RIVET_ENDPOINT to the local preview engine" unless ENV["RIVET_ENDPOINT"]
+    pool = create_pool
+    parent = Class.new(Rivet::Actor) do
+      state({"base" => 1})
+      on_start { |_ctx| @started = ["parent"] }
+      action(:read) { |_ctx| label }
+      action(:describe) { |ctx| [label, @started, ctx.state] }
+      queue(:double) { |_ctx, value| value * 2 }
+      def label = "parent"
+    end
+    child = Class.new(parent) do
+      on_start { |_ctx| @started = ["child"] }
+      action(:read) { |_ctx| "overridden" }
+      action(:child_only) { |_ctx| true }
+      def label = "#{super}/child"
+    end
+    sibling = Class.new(parent) { state({"sibling" => 2}) }
+    parent.action(:late) { |_ctx| "parent only" }
+
+    registry = Rivet::Registry.new(parent: parent, child: child, sibling: sibling)
+    runner = Thread.new { registry.start(pool: pool) }
+    client = Rivet::Client.new(pool: pool)
+    key = [SecureRandom.hex(6)]
+    base_actor = client.get_or_create(:parent, key)
+    child_actor = client.get_or_create(:child, key)
+    sibling_actor = client.get_or_create(:sibling, key)
+
+    assert_equal ["parent", ["parent"], {"base" => 1}], base_actor.describe
+    assert_equal ["parent/child", ["child"], {"base" => 1}], child_actor.describe
+    assert_equal ["parent", ["parent"], {"sibling" => 2}], sibling_actor.describe
+    assert_equal "parent", base_actor.read
+    assert_equal "overridden", child_actor.read
+    assert_equal "parent", sibling_actor.read
+    assert child_actor.child_only
+    assert_raises(Rivet::Error) { base_actor.child_only }
+    assert_raises(Rivet::Error) { sibling_actor.child_only }
+    assert_equal({"status" => "completed", "response" => 14}, child_actor.send_and_wait(:double, 7))
+    assert_equal "parent only", base_actor.late
+    assert_raises(Rivet::Error) { child_actor.late }
+  ensure
+    registry&.stop
+    if runner
+      assert runner.join(50), "runner did not shut down"
+      runner.value
+    end
+  end
+
   def test_activation_isolation_overload_lifecycle_capacity_and_bounded_shutdown
     skip "Set RIVET_ENDPOINT to the local preview engine" unless ENV["RIVET_ENDPOINT"]
-    pool = "ruby-hardening-#{SecureRandom.hex(6)}"
-    uri = URI("#{ENV.fetch('RIVET_ENDPOINT')}/pools/#{pool}?namespace=#{ENV.fetch('RIVET_NAMESPACE', 'default')}")
-    request = Net::HTTP::Put.new(uri, "Content-Type" => "application/json")
-    request["Authorization"] = "Bearer #{ENV['RIVET_TOKEN']}" if ENV["RIVET_TOKEN"]
-    request.body = "{}"
-    response = Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == "https", read_timeout: 5) { |http| http.request(request) }
-    assert response.is_a?(Net::HTTPSuccess), response.body
+    pool = create_pool
 
     entered, release, connected, result = 4.times.map { ::Queue.new }
     probe = Class.new(Rivet::Actor) do
@@ -87,5 +129,18 @@ class RegistryTest < Minitest::Test
     runner&.join(2)
     blocked&.join(6)
     connection&.close
+  end
+
+  private
+
+  def create_pool
+    pool = "ruby-hardening-#{SecureRandom.hex(6)}"
+    uri = URI("#{ENV.fetch('RIVET_ENDPOINT')}/pools/#{pool}?namespace=#{ENV.fetch('RIVET_NAMESPACE', 'default')}")
+    request = Net::HTTP::Put.new(uri, "Content-Type" => "application/json")
+    request["Authorization"] = "Bearer #{ENV['RIVET_TOKEN']}" if ENV["RIVET_TOKEN"]
+    request.body = "{}"
+    response = Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == "https", read_timeout: 5) { |http| http.request(request) }
+    assert response.is_a?(Net::HTTPSuccess), response.body
+    pool
   end
 end

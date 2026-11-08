@@ -86,13 +86,17 @@ module Rivet
       end
 
       # Configure idle sleep and scheduled managed-state saves in seconds.
+      # Omitted settings retain existing values, including inherited settings.
       # Returning from an action is not an fsync guarantee. Graceful sleep and
       # shutdown flush state; abrupt process death may lose unsaved changes.
       # @param sleep_timeout [Numeric] nonnegative idle seconds (default 30)
       # @param state_save_interval [Numeric] nonnegative save seconds (default 1)
       # @return [Hash{Symbol => Integer}] merged settings in milliseconds
       # @raise [ArgumentError] either duration is negative
-      def configure(sleep_timeout: 30, state_save_interval: 1)
+      def configure(
+        sleep_timeout: options.fetch(:sleep_timeout_ms, 30_000) / 1000r,
+        state_save_interval: options.fetch(:state_save_interval_ms, 1000) / 1000r
+      )
         raise ArgumentError, "timeouts must be nonnegative" if sleep_timeout < 0 || state_save_interval < 0
         options.merge!(
           sleep_timeout_ms: (sleep_timeout * 1000).to_i,

@@ -1,11 +1,18 @@
 require_relative "test_helper"
 
 class ActorTest < Minitest::Test
-  def test_inheritance_keeps_parent_actions_and_isolates_child_definitions
-    parent = Class.new(Rivet::Actor) { action(:read) { |_ctx| "parent" } }
-    child = Class.new(parent) { action(:write) { |_ctx| "child" } }
-    assert_equal ["read"], parent.actions.keys
-    assert_equal ["read", "write"], child.actions.keys
+  def test_partial_configuration_preserves_inherited_and_previous_settings
+    parent = Class.new(Rivet::Actor)
+    parent.configure(sleep_timeout: 123, state_save_interval: Rational(1001, 1000))
+    child = Class.new(parent)
+    sibling = Class.new(parent)
+
+    assert_equal({sleep_timeout_ms: 9000, state_save_interval_ms: 1001}, child.configure(sleep_timeout: 9))
+    assert_equal({sleep_timeout_ms: 9000, state_save_interval_ms: 0}, child.configure(state_save_interval: 0))
+    assert_equal({sleep_timeout_ms: 9000, state_save_interval_ms: 0}, child.configure)
+    assert_equal({sleep_timeout_ms: 123_000, state_save_interval_ms: 1001}, parent.configure)
+    assert_equal({sleep_timeout_ms: 123_000, state_save_interval_ms: 1001}, sibling.configure)
+    assert_equal({sleep_timeout_ms: 30_000, state_save_interval_ms: 1000}, Class.new(Rivet::Actor).configure)
   end
 
   def test_client_rejects_non_string_actor_keys_before_network_io

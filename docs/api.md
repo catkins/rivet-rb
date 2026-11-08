@@ -34,6 +34,49 @@ See [callback concurrency](concurrency.md#ordinary-ruby-threads) before sharing 
 HTTP requests and responses are buffered. The response triple is Rack-shaped; this is not a
 Rack server adapter and does not support streaming bodies or raw streaming WebSockets.
 
+## Subclassing actors
+
+Subclasses receive copies of the parent's action, queue, hook and configuration registrations,
+and inherit its state initializer. Adding or replacing a registration on the child leaves
+parents and siblings unchanged. These are snapshots taken when the subclass is created:
+finish defining the base class before defining subclasses. Later DSL changes to the parent
+do not reach existing subclasses.
+
+`configure` preserves omitted settings, including inherited values. For example, if the parent
+sets `state_save_interval: 7`, the child's `configure(sleep_timeout: 9)` retains that seven-second
+save interval. With no previous setting, defaults remain 30 seconds for sleep and one second
+for managed-state saves.
+
+An action, queue handler or hook with the same name **replaces** the inherited block. Hooks do
+not chain automatically, and `super` inside a DSL block cannot call the parent's block: these
+registrations are not Ruby methods. Use ordinary instance methods for shared behaviour and
+normal Ruby `super` calls:
+
+```ruby
+class BaseActor < Rivet::Actor
+  on_start { |ctx| prepare(ctx) }
+
+  def prepare(_ctx)
+    @started_at = Time.now
+  end
+end
+
+class Worker < BaseActor
+  def prepare(ctx)
+    super
+    @jobs_processed = 0
+  end
+end
+```
+
+The inherited hook calls the child's `prepare`, which explicitly calls the parent method.
+Ordinary methods are not remotely callable unless an `action` block exposes them.
+
+Redefining `state` replaces the entire initializer; parent and child defaults are not merged.
+Prefer `on_start` for activation setup. If you override `initialize`, it must take no required
+arguments and call `super` so the actor's locks are allocated. Likewise, a custom class-level
+`inherited` hook must call `super` to preserve DSL registration copying.
+
 ## Managed state
 
 `state` receives `(ctx, input)`; absent input is `nil`. Constant defaults also work:
