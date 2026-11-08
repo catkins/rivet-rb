@@ -14,6 +14,7 @@ Gem::Specification.new do |spec|
     "Cargo.{toml,lock}",
     "README.md",
     "RESEARCH.md",
+    "docs/**/*.md",
     "LICENSE"
   ]
   spec.require_paths = ["lib"]

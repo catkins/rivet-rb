@@ -34,9 +34,10 @@ or model-chosen URL execution is provided.
 For the orb's host-network workaround, insert `-f docker/compose.host.yaml` after `-f compose.yaml`
 in these commands. All three files compose together.
 
-For a local Ruby 4 development build, use the base README's build instructions, stop the Compose
-runner, and run `bundle exec ruby examples/durable_agent/server.rb` with the engine and provider
-environment variables set. Run `client.rb` in a second process with the same engine configuration.
+For a local Ruby 4 development build, follow the [build instructions](../../docs/development.md#build-without-docker),
+stop the Compose runner, and run `bundle exec ruby examples/durable_agent/server.rb` with the
+engine and provider environment variables set. Run `client.rb` in a second process with the same
+engine configuration.
 
 ## Client API
 
