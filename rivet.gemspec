@@ -20,6 +20,7 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
   spec.extensions = ["ext/rivet/extconf.rb"]
   spec.add_dependency "rb_sys", "~> 0.9"
+  spec.add_dependency "concurrent-ruby", "~> 1.3"
   spec.add_development_dependency "rake", "~> 13.0"
   spec.add_development_dependency "rake-compiler", "~> 1.3"
   spec.add_development_dependency "minitest", "~> 5.0"

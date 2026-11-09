@@ -1,5 +1,7 @@
+require "concurrent"
+
 module Rivet
-  # Hosts named actor subclasses on Ruby-created callback threads in the main
+  # Hosts named actor subclasses on pooled Ruby callback threads in the main
   # Ractor. Each activation has a separate Ruby instance. Signal handling belongs
   # to the application: arrange for INT/TERM handlers to call {#stop}.
   class Registry
@@ -19,7 +21,7 @@ module Rivet
 
     # Start the native runner and block while dispatching callbacks.
     # Start once at a time; another Ruby thread may call {#stop}. Work, lifecycle
-    # and background run callbacks have separate live-thread limits. Background
+    # and background run callbacks have separate admission limits. Background
     # hooks share the work channel; work and lifecycle channels each hold at
     # most 64 pending callbacks. Excess callbacks are rejected as
     # overloaded. Waiting for an actor's action mutex consumes a work slot.
@@ -47,7 +49,7 @@ module Rivet
     # @raise [Error] already running, live callbacks remain, or native runner fails
     # @raise [TimeoutError] shutdown deadline expires; Ruby callbacks may remain alive
     def start(workers: 16, lifecycle_workers: 4, background_workers: 16, shutdown_timeout: 45, **options)
-      raise Error, "registry still has running callbacks" if @native || @workers.any? { |thread, _| thread.alive? }
+      raise Error, "registry still has running callbacks" if @native || @workers.any?
       unless [workers, lifecycle_workers, background_workers].all? { |count| count.is_a?(Integer) && count > 0 }
         raise ArgumentError, "worker limits must be positive integers"
       end
@@ -58,29 +60,35 @@ module Rivet
         actor.options.merge(actions: actor.actions.keys, queues: actor.queues.keys, run: actor.hooks.key?("run"))
       end
       @native = NativeRunner.start(definitions, options)
+      pools = limits.transform_values do |limit|
+        Concurrent::FixedThreadPool.new(limit, max_queue: limit, fallback_policy: :abort)
+      end
       begin
         loop do
           if @shutdown_deadline && Process.clock_gettime(Process::CLOCK_MONOTONIC) >= @shutdown_deadline
             raise TimeoutError, "registry shutdown timed out; Ruby callbacks may still be running"
           end
           callback = @native.poll
-          @workers.delete_if { |thread, _| !thread.alive? }
           @instances.delete_if { |_, (_, ctx)| ctx.finished? }
           if callback
             next unless callback.active?
             lane = callback.lane
             limit = limits.fetch(lane)
-            if @workers.count { |_, call| call.lane == lane } >= limit
+            if @workers.count { |call, _| call.lane == lane } >= limit
               callback.reject(limit)
               next
             end
             native_ctx = callback.context
             metadata = native_ctx.metadata
             actor, = @instances[metadata.fetch("activation")] ||= [@actors.fetch(metadata.fetch("name")).new, native_ctx]
-            thread = Thread.new(callback, native_ctx, actor) do |call, ctx, instance|
-              dispatch(call, ctx, instance)
+            @workers[callback] = true
+            pools.fetch(lane).post(callback, native_ctx, actor) do |call, ctx, instance|
+              begin
+                dispatch(call, ctx, instance)
+              ensure
+                @workers.delete(call)
+              end
             end
-            @workers[thread] = callback
           elsif @native.finished?
             break
           end
@@ -89,14 +97,15 @@ module Rivet
       ensure
         @native.stop
         @shutdown_deadline ||= Process.clock_gettime(Process::CLOCK_MONOTONIC) + @shutdown_timeout
-        @workers.each do |thread, callback|
-          callback.cancel
-          thread.join([@shutdown_deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0].max)
+        @workers.each_key(&:cancel)
+        pools.each_value(&:shutdown)
+        pools.each_value do |pool|
+          pool.wait_for_termination([@shutdown_deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0].max)
         end
         @native.abort
         @instances.clear
         @native = nil
-        if @workers.any? { |thread, _| thread.alive? }
+        if @workers.any?
           raise TimeoutError, "registry shutdown timed out; Ruby callbacks may still be running"
         end
       end

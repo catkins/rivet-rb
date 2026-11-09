@@ -44,13 +44,21 @@ neither rolls back remote actions or external effects.
 ## Callback admission
 
 `registry.start(workers: 16, lifecycle_workers: 4, background_workers: 16, shutdown_timeout: 45)`
-caps live work, lifecycle and background threads separately. Background hooks share the work
-channel; work and lifecycle channels each hold at most 64 pending callbacks. Excess work fails
-with Rivet's overload error instead of allocating more threads. Waiting for an actor's action
-lock also consumes a work slot.
+uses three internal `concurrent-ruby` fixed thread pools, with separate capacity for work,
+lifecycle/connection hooks and background `run` hooks. Threads are reused across callbacks and
+actors; there is no public executor plug-in API. A long-running `run` hook occupies a background
+slot, not a work slot. Application thread-local request context must be cleaned up in `ensure`;
+do not rely on receiving a fresh thread for each callback.
+
+The limits count admitted callbacks, including any waiting to start or waiting for an actor's
+action lock. The executor queues do not add admission capacity. Background hooks share the
+native work channel; work and lifecycle channels each hold at most 64 pending callbacks.
+Excess work fails with Rivet's overload error rather than adding unlimited threads or queued jobs.
 
 Lifecycle capacity is reserved but finite, not a guarantee against hook overload. These are
 bridge admission limits, not bounds on upstream runtime memory or buffered HTTP bodies.
+HTTP actions also need connection/lifecycle callbacks: a low lifecycle limit can reject HTTP
+traffic even when work slots are available. Raising work capacity alone does not address that.
 
 ## Shutdown and cancellation
 
